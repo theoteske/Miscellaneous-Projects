@@ -1,0 +1,527 @@
+---
+title: "Econ 187 Project 1"
+output: pdf_document
+date: "2023-05-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(MASS)
+library(ISLR)
+library(class)
+library(nnet)
+library(glmnet)
+library(elasticnet)
+library(glmnetUtils)
+library(pROC)
+#rm(list=ls())
+options(warn=-1)
+```
+
+# Introduction
+
+In this paper we consider statistical learning methods for classification, then explore some options for regularization in the context of linear regression. We draw heavily from the classic textbook *The Elements of Statistical Learning*, by Hastie et al. We use two different datasets to illustrate these methods in R, one for classification and another for regularization. Each dataset is taken from the UCI Machine Learning Repository, and each is cited as per the citation request provided by the dataset creators.
+
+The dataset we use for the classification methods involves classifying seven different types of dry beans. Images of 13,611 grains of 7 different registered dry beans were taken with a high-resolution camera. Bean images obtained by computer vision system were subjected to segmentation and feature extraction stages, and a total of 16 features (12 dimensions and 4 shape forms) were obtained from the grains. Attributes include area, perimeter, aspect ratio, shape factors, and others.
+
+For the regularization methods, we use a dataset with 81 features extracted from 21263 superconductors along with the critical temperature of each in the 82nd column, the latter of which we attempt to predict. Attributes include mean atomic mass, mean electron affinity, and mean fusion heat, among others.
+
+# Classification
+
+Suppse we have a feature set $X$ with $p$ features that we hope to classify into one of $K$ classes in a set of classes $Y$. Because $Y$ is a set of discrete values, we can divide the feature space into a collection of regions according to the classification within each region. The dividing lines between each region are known as *decision boundaries*, and finding the optimal dividing lines to minimize classification error is our goal.
+
+The only way to truly achieve optimal classification is to determine the class posteriors $\text{Pr}(Y|X)$. If we let $\pi_k$ denote the prior probability of class $Y=k$, and $f_k(x)$ denote the probability density of $X$ in class $k$, then Bayes' Theorem tells us that
+
+\[
+\text{Pr}(Y=k|X=x)=\frac{\pi_kf_k(x)}{\sum_{i=1}^{K}\pi_if_i(x)}. \tag{1}
+\]
+
+Note that $\sum_{k=1}^{K}\pi_k=1$. Clearly, knowing $f_k(x)$ is tantamount to knowing $\text{Pr}(Y=k|X=x)$, but in reality we have to estimate this class density. Suppose we assume that each $f_k(x)$ is Gaussian, or normally distributed, so
+
+\[
+f_k(x)=\frac{1}{(2\pi)^{p/2}|\mathbf{\Sigma}_k|^{1/2}}e^{-\frac{1}{2}(x-\mu_k)^T\mathbf{\Sigma}_k^{-1}(x-\mu_k)}, \tag{2}
+\]
+
+where $\mathbf{\Sigma}_k$ is the covariance matrix for class $k$ and $\mu_k$ is the mean of class $k$. In practice, we don't know the parameters of the Gaussian distributions. So, to perform linear discriminant analysis (LDA), we estimate them as follows:
+
+
+\begin{align*}
+  \hat{\pi}_k&=\frac{N_k}{N}; \\
+  \hat{\mu}_k&=\sum_{y_i=k}\frac{x_i}{N_k}; \\
+  \hat{\mathbf{\Sigma}}&=\sum_{k=1}^K\sum_{y_i=k}\frac{(x_i-\hat{\mu}_k)(x_i-\hat{\mu}_k)^T}{N-K},
+\end{align*}
+
+
+
+where $N_k$ is the number of class-$k$ observations and $N$ is the total number of observations.
+
+Note that, to perform LDA, we have assumed that $\mathbf{\Sigma}_k=\mathbf{\Sigma}$ for all $k$, so every class has a shared covariance matrix. If we compare two particular classes $k$ and $l$, the decision boundary between them can be found by looking at the log-ratio, so
+
+
+\begin{align*}
+\log\frac{\text{Pr}(Y=k|X=x)}{\text{Pr}(Y=l|X=x)}&=\log\frac{f_k(x)}{f_l(x)}+\log\frac{\pi_k}{\pi_l}\\
+&=x^T\mathbf{\Sigma}^{-1}(\mu_k-\mu_l)-\frac{1}{2}(\mu_k+\mu_l)^T\mathbf{\Sigma}^{-1}(\mu_k-\mu_l)+\log\frac{\pi_k}{\pi_l},
+\end{align*}
+
+
+which is a linear equation in $x$. This implies that the *linear discriminant functions* 
+
+\[
+\delta_k(x)=x^T\mathbf{\Sigma}^{-1}\mu_k-\frac{1}{2}\mu_k^T\mathbf{\Sigma}^{-1}\mu_k+\log\pi_k \tag{3}
+\]
+
+characterize the decision rule, where $\hat{Y}(x)=\text{argmax}_k\delta_k(x)$.
+
+To see how this works in practice, we turn to our dry bean dataset. First, we set up our data.
+
+```{r begin}
+#load in data
+bean <- read.table("C:/Users/Theo/Downloads/Dry_Bean_Dataset.csv", header=TRUE,
+   sep=",")
+
+#make sure our target variable is a factor
+bean$Class <- as.factor(bean$Class)
+
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+trainIndex <- createDataPartition(bean$Class, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+training <- bean[trainIndex, ]
+testing <- bean[-trainIndex, ]
+
+#set up training control with 10-fold cv
+control <- trainControl(method = "cv",
+                     number = 10,
+                     classProbs = TRUE,
+                     verboseIter = FALSE)
+```
+
+Now, we can perform LDA, using the `caret` library to set up a 10-fold cross-validation to evaluate our results.
+
+```{r lda}
+#perform linear discriminant analysis
+garbage0 <- capture.output(
+lda_fit <- train(Class ~ ., 
+             data = training, 
+             method = "lda",
+             trControl = control,
+             verbose = FALSE))
+
+#predict testing set and create confusion matrix
+lda_pred <- predict(lda_fit, newdata = testing)
+confusionMatrix(lda_pred, testing$Class)
+
+```
+
+Linear discriminant analysis performs very well, with an accuracy in predicting the test set of 90.5%.
+
+If we no longer assume that each $\mathbf{\Sigma}_k$ is equal, then we have a quadratic term remaining in the discriminant functions. Therefore, we have *quadratic discriminant functions*
+
+\[
+\delta_k(x)=-\frac{1}{2}\log|\mathbf{\Sigma}_k|-\frac{1}{2}(x-\mu_k)^T\mathbf{\Sigma}_k^{-1}(x-\mu_k)+\log\pi_k, \tag{4}
+\]
+
+and the decision boundary between each pair of classes $k$ and $l$ is given by $\{x:\delta_k(x)=\delta_l(x)\}$.
+
+We use an almost identical procedure as we did with LDA to execute QDA in R.
+
+```{r qda}
+#perform quadratic discriminant analysis
+garbage0 <- capture.output(
+qda_fit <- train(Class ~ ., 
+             data = training, 
+             method = "qda",
+             trControl = control,
+             verbose = FALSE))
+
+#predict testing set and create confusion matrix
+qda_pred <- predict(qda_fit, newdata = testing)
+confusionMatrix(qda_pred, testing$Class)
+
+```
+
+QDA performs slightly better than LDA, with a test-set accuracy of 91.6%.
+
+Next, we fit a *multinomial logistic regression* model to our training data. The motivation behind logistic regression is that we want to model the class posteriors $\text{Pr}(Y|X)$ by linear functions in $x$, while ensuring that they sum to $1$ and remain in $[0,1]$. We can express the model in terms of the log-ratio of the probability for each class, so
+
+\begin{align*}
+\log\frac{\text{Pr}(Y=1|X=x)}{\text{Pr}(Y=K|X=x)}&=\beta_{10}+\beta_1^Tx\\
+\log\frac{\text{Pr}(Y=2|X=x)}{\text{Pr}(Y=K|X=x)}&=\beta_{20}+\beta_2^Tx\\
+\dots\\ \tag{5}
+\log\frac{\text{Pr}(Y=K-1|X=x)}{\text{Pr}(Y=K|X=x)}&=\beta_{(K-1)0}+\beta_{K-1}^Tx.
+\end{align*}
+
+Exponentiating and rearranging, we find that
+
+\begin{align*}
+\text{Pr}(Y=k|X=x)&=\frac{\exp(\beta_{k0}+\beta_k^Tx)}{1+\sum_{i=1}^{K-1}\exp(\beta_{i0}+\beta_i^Tx)}, \text{ for }k=1,\dots,K-1\\
+\text{Pr}(Y=K|X=x)&=\frac{1}{1+\sum_{i=1}^{K-1}\exp(\beta_{i0}+\beta_i^Tx)}. \tag{5}
+\end{align*}
+
+```{r logit}
+#perform multinomial logistic regression
+garbage0 <- capture.output(
+log_fit <- train(Class ~ ., 
+             data = training, 
+             method = "multinom",
+             trControl = control,
+             verbose = FALSE))
+
+#predict testing set and create confusion matrix
+log_pred <- predict(log_fit, newdata = testing)
+confusionMatrix(log_pred, testing$Class)
+
+```
+
+Multinomial logistic regression performs even better than both LDA and QDA, with a test-set accuracy of 92.9%.
+
+The final classification method we will consider is $k$*-nearest neighbors*. We classify each point $\mathbf{x}$ in the feature set according to the classifications of the observations "closest" to $\mathbf{x}$ in the feature space. More formally, if we let $N_k(\mathbf{x})$ be the neighborhood of $\mathbf{x}$ defined by the $k$ closest points $\mathbf{x}_i$ according to some metric, then
+
+\[
+\hat{Y}(x):=\frac{1}{k}\sum_{\mathbf{x}_i \in N_k(\mathbf{x})}y_i. \tag{6}
+\]
+
+In general, we use the Euclidean $L^2$ metric, so if $\mathbf{x}^{(1)}$ and $\mathbf{x}^{(2)}$ are observations in the feature space, then 
+
+\[
+d(\mathbf{x}^{(1)}, \mathbf{x}^{(2)})=\sqrt{\sum_{l=1}^p(x^{(1)}_l-x^{(2)}_l)^2} ,
+\]
+
+where $p$ is the dimension of the feature space.
+
+```{r knn}
+#perform k nearest neighbors
+garbage0 <- capture.output(
+knn_fit <- train(Class ~ ., 
+             data = training, 
+             method = "knn",
+             trControl = control))
+
+#predict testing set and create confusion matrix
+knn_pred <- predict(knn_fit, newdata = testing)
+confusionMatrix(knn_pred, testing$Class)
+
+```
+
+We note that kNN performs significantly worse than LDA, QDA, and multinomial logistic regression, with a test-set accuracy of only 71.6%. This suggests that a linear model is more appropriate than a nonlinear model to produce a fit to this data. However, we do note that multinomial logistic regression and QDA both outperform LDA, which suggests that the Bayes decision boundaries between classes are in fact slightly nonlinear; both QDA and multinomial logistic regression have more flexibility than LDA, which allows them to better capture the complexities of the true decision boundaries.
+
+# Regularization
+
+We operate in the same setting as above, but now we aim to predict a quantitative variable $Y$. Consider a linear regression using ordinary least squares (OLS):
+
+\[
+\hat\beta^{\text{OLS}}=\underset{\beta}{\text{argmin}} \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^px_{ij}\beta_j)^2. \tag{7}
+\]
+
+When we perform OLS regression, issues can arise due to *multicollinearity*, which is when two or more predictors are highly correlated. When this is the case, $X^TX$ is nearly singular, but not quite. Suppose that the two predictors $X_a$ and $X_b$ are highly correlated. OLS will have trouble distinguishing which predictor is responsible for which effects on our response variable $Y$, as both $X_a$ and $X_b$ point in nearly the same direction (when they are considered as vectors). This leads to unstable coefficient estimates, i.e. coefficient estimates which are highly dependent on the training set we choose. Such high variance will lead to decreased accuracy when predicting the test set.
+
+Shrinkage methods all deal with this problem of multicollinearity by shrinking every coefficient estimate towards zero. This makes the unstable coefficient estimates less problematic, as each coefficient is smaller, decreasing variance. Of course, such a shrinkage increases bias, but we optimize the amount of shrinkage to balance out the bias-variance trade off.
+
+Every shrinkage method shrinks the regression coefficients by imposing a penalty on their size. To perform *ridge regression*, we introduce a hyperparameter $\lambda$ to penalize the sum-of-squares of the regression coefficients:
+
+\[
+\hat\beta^{\text{ridge}}=\underset{\beta}{\text{argmin}}\bigg\{ \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^px_{ij}\beta_j)^2+\lambda\sum_{j=1}^p\beta_j^2\bigg\} \tag{8}
+\]
+
+Note that the coefficients are being shrunk towards the origin. Observe that we can rewrite the above as Ordinary Least Squares, but with a size constraint on the parameters, as below:
+
+
+\begin{align*}
+\hat\beta^{\text{ridge}}&=\underset{\beta}{\text{argmin}}\bigg\{ \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^px_{ij}\beta_j)^2\bigg\}, \\
+&\text{subject to } \sum_{j=1}^p\beta_j^2\leq S,
+\end{align*}
+
+
+to make this size constraint more obvious. To find the ridge regression solutions, we first reparametrize by centering our inputs. Replacing $x_{ij}$ by $x_{ij}-\bar{x}_j$ in $(8)$ yields
+
+\[
+\hat\beta^{\text{ridge}}=\underset{\beta}{\text{argmin}}\bigg\{ \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^p\bar{x}_j\beta_j-\sum_{j=1}^p(x_{ij}-\bar{x}_j)\beta_j)^2+\lambda\sum_{j=1}^p\beta_j^2\bigg\}. \tag{9}
+\]
+
+Now, we can define $\beta^c$ by
+
+
+\begin{align*}
+\beta^c_0&:=\beta_0+\sum_{j=1}^p\bar{x}_j\beta_j\\
+\beta^c_j&:=\beta_j \text{ for }j=1,2,...,p
+\end{align*}
+
+
+in order to rewrite $(9)$ as
+
+\[
+\hat\beta^{\text{ridge}} = \underset{\beta^c}{\operatorname{argmin}}\left\{\sum_{i=1}^N[y_i-\beta_0^c - \sum_{j=1}^p(x_{ij}-\bar x_j)\beta^c_j]^2 + \lambda \sum_{j=1}^p(\beta_j^c)^2\right\}.
+\]
+
+Now, if we let 
+
+
+\begin{align*}
+\tilde{y_i}&=y_i-\beta^c_0=y_i-\bar{y},\\
+\tilde{x}_{ij}&=x_{ij}-\bar{x}_j,
+\end{align*}
+
+
+and if, for convenience, we simply denote $\beta^c$ as $\beta$, then our problem becomes, in matrix form,
+
+\[
+\min_{\beta} (\tilde{\textbf{y}} - \tilde{\textbf{X}}\beta)^T(\tilde{\textbf{y}} - \tilde{\textbf{X}}\beta) + \lambda\beta^T\beta.
+\]
+
+Note that the input matrix $\tilde{\mathbf{X}}$ now has $p$ (rather than $p + 1$) columns due to the centering we performed. To solve this, we simply take the derivative with respect to $\beta$ and set the result equal to zero. We find that 
+
+
+\begin{align*}
+\frac{\partial (\tilde{\mathbf{y}}-\beta^T \tilde{\mathbf{X}})^T (\tilde{\mathbf{y}}-\beta^T \tilde{\mathbf{X}})}{\partial \beta}&=-2\tilde{\mathbf{X}}^T(\tilde{\mathbf{y}}-\beta^T \tilde{\mathbf{X}}),\\
+\frac{\partial \lambda \beta^T \beta}{\partial \beta}&=2\lambda\beta,
+\end{align*}
+
+so we derive the first order condition
+
+\[
+\tilde{\mathbf{X}}^T\tilde{\mathbf{y}} = \tilde{\mathbf{X}}^T\tilde{\mathbf{X}}\beta + \lambda\beta.
+\]
+
+Solving for $\beta$ yields the solution
+\[
+\hat\beta^{\text{ridge}}=(\tilde{\mathbf{X}}^T\tilde{\mathbf{X}}+ \lambda \mathbf{I} )^{-1}\tilde{\mathbf{X}}^T \tilde{\mathbf{y}}, \tag{10}
+\]
+
+where $\mathbf{I}$ is the $p\times p$ identity matrix. To see ridge regression in action, we first set up our data.
+
+```{r regular}
+#load in data
+super <- read.table("C:/Users/Theo/Downloads/superconduct.csv", header=TRUE, sep=",")
+super <- na.omit(super)
+
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+regtrainIndex <- createDataPartition(super$critical_temp, p = .75, list = FALSE, times = 1)
+regtrain <- super[regtrainIndex, ]
+regtest <- super[-regtrainIndex, ]
+
+#set up new training control
+regcontrol <- trainControl(method = "cv", number = 10)
+
+```
+
+Once again, we can make use of the `caret` library to evaluate our model via a 10-fold cross-validation. We use the `glmnet()` function with $\alpha=0$, which will be explained below when we encounter the elastic net.
+
+```{r ridge}
+#create grid of possible lambda values
+grid = 10^seq(10, -2, length = 100)
+
+#perform ridge regression
+ridge_fit <- train(critical_temp ~ .,
+                    data = regtrain,
+                    method = "glmnet",
+                    preProcess = c("center", "scale"), #normalize predictors
+                    tuneLength = 25,
+                    tuneGrid = expand.grid(alpha = 0, lambda=grid),
+                    trControl = regcontrol)
+
+#predict testing data
+pred_ridge <- predict(ridge_fit, newdata = regtest)
+
+#use RMSE to evaluate performance
+postResample(pred = pred_ridge, obs = regtest$critical_temp)
+```
+
+We can also perform the exact same task by instead using the `cv.glmnet()` function, which has a cross-validation (with 10 folds by default) built in. Doing so allows us to easily plot the lambda values the function tries against the performance of the model at each value.
+
+```{r testingr}
+#trying it out using cv.glmnet
+ridge_new <- cv.glmnet(x=as.matrix(regtrain[,-82]), y=regtrain$critical_temp, alpha=0)
+
+#plot optimal lambda value
+plot(ridge_new)
+
+#evaluate model using RMSE
+pred_rnew <- predict(ridge_new, newx=as.matrix(regtest[,-82]), s="lambda.min")
+paste("RMSE using cv.glmnet: ", RMSE(pred_rnew, regtest$critical_temp))
+
+```
+
+We can see that each implementation of ridge regression yields the same RMSE value when evaluated on the test set of 18.93. We can also check that each method yields a similar optimal lambda value.
+
+```{r rider}
+#optimal lambda with first method
+paste("Optimal lambda using caret: ", ridge_fit$bestTune$lambda)
+
+#optimal lambda with second method
+paste("Optimal lambda using cv.glmnet: ", ridge_new$lambda.min)
+```
+
+*Lasso regression* is a similar shrinkage method to ridge, but the $L^2$ ridge penalty is replaced by an $L^1$ lasso penalty:
+
+\[
+\hat\beta^{\text{lasso}}=\underset{\beta}{\text{argmin}}\bigg\{ \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^px_{ij}\beta_j)^2+\lambda\sum_{j=1}^p|\beta_j|\bigg\}. \tag{11}
+\]
+
+Because this expression is not differentiable everywhere, we cannot find a closed-form solution like we did for ridge. Of course, solutions can be found numerically, but that is beyond the scope of this paper. Again we first use the `caret` library, but this time we set $\alpha=1$.
+
+```{r lasso}
+#perform lasso regression
+lasso_fit <- train(critical_temp ~ .,
+                    data = regtrain,
+                    method = "glmnet",
+                    preProcess = c("center", "scale"),
+                    tuneLength = 25,
+                    tuneGrid = expand.grid(alpha = 1, lambda = grid),
+                    trControl = regcontrol)
+
+#predict the testing data
+pred_lasso <- predict(lasso_fit, newdata = regtest)
+
+#use RMSE to evaluate performance
+postResample(pred = pred_lasso, obs = regtest$critical_temp)
+```
+
+We find that lasso regression using `caret` yields an RMSE of 17.79 when evaluated on the test set. Again, we also use `cv.glmnet`:
+
+```{r testingl}
+#use cv.glmnet to fit a lasso model
+lasso_new <- cv.glmnet(x=as.matrix(regtrain[,-82]), y=regtrain$critical_temp, alpha=1)
+
+#plot the lambdas vs performance
+plot(lasso_new)
+
+#evaluate performance on the test set
+pred_lnew <- predict(lasso_new, newx=as.matrix(regtest[,-82]), s="lambda.min")
+paste("RMSE for lasso: ", RMSE(pred_lnew, regtest$critical_temp))
+
+```
+
+Again, `cv.glmnet` yields an extremely similar RMSE value of 17.72. Across both implementations, lasso outperforms ridge in terms of RMSE.
+
+We now consider an *elastic net regression*, which combines the penalties of ridge and lasso by introducing a new hyperparameter $\alpha$ which determines how much impact each penalty term has.
+
+\[
+\hat\beta^{\text{enet}}=\underset{\beta}{\text{argmin}}\bigg\{ \sum_{i=1}^{n}(y_i-\beta_0-\sum_{j=1}^px_{ij}\beta_j)^2+\lambda\Big(\frac{1-\alpha}{2}\sum_{j=1}^p\beta_j^2+\alpha\sum_{j=1}^p|\beta_j|\Big)\bigg\}. \tag{12}
+\]
+
+We note that when $\alpha=0$, elastic net reduces to ridge regression, and similarly, when $\alpha=1$, we simply have a lasso regression. By now, it is probably clear that the `glmnet()` function we were using above actually performs an elastic net regression, but we were modifying it so it would yield ridge and lasso regressions instead.
+
+The implementation of elastic net is thus very similar to what we've already done, but since elastic net requires optimizing two hyperparameters (both $\lambda$ and $\alpha$) simultaneously, we use the `caret` library.
+
+```{r enet}
+#perform elastic net regression
+enet_fit <- train(critical_temp ~ .,
+                    data = regtrain,
+                    method = "glmnet",
+                    preProcess = c("center", "scale"),
+                    tuneLength = 25,
+                    trControl = regcontrol)
+
+#predict testing data
+pred_enet <- predict(enet_fit, newdata = regtest)
+
+#use RMSE to evaluate performance
+postResample(pred = pred_enet, obs = regtest$critical_temp)
+```
+
+We find that elastic net yields an RMSE of 17.76 when evaluated on the test set, so it performs essentially the same as lasso and better than ridge.
+
+Finally, we introduce *principal component regression (PCR)*, a method of regularization that doesn't involve shrinkage. Principal component regression involves first performing principal component analysis (PCA) to address multicollinearity, then regressing on the chosen principal components. We will explain how to implement PCA, and it will become clear how this eliminates multicollinearity by contruction.
+
+To perform PCA, we first assume that the matrix of predictors $X$ is mean-centered and standardized. Then we find the correlation matrix 
+
+\[
+\mathbf{Q}=\frac{1}{N-1}\mathbf{X}^T\mathbf{X}
+\]
+
+Next, we diagonalize this matrix, assuming $\mathbf{X}$ has full column-rank:
+
+\[
+\mathbf{Q}=\mathbf{W}\mathbf{\Lambda}\mathbf{W}^T,
+\]
+
+where $\mathbf{\Lambda}$ is the diagonal matrix of eigenvalues of $\mathbf{Q}$. Now, we order the eigenvectors based on the size of their corresponding eigenvalues, and we choose the $M$ eigenvectors with the largest eigenvalues.
+
+Finally, we project the data onto the $M$ eigenvectors that we chose:
+
+\[
+\mathbf{T}_M=\mathbf{X}\mathbf{W}_M \tag{13}
+\]
+
+Note that the transformation $\mathbf{T}_M$ maps a data vector from the feature space to a new space of $M$ variables that are uncorrelated. The column vectors of $\mathbf{T}_M$ are called *principal components*, and we use these as the new predictors on which we will regress.
+
+Notably, we can think of ridge regression as being a kind of smooth version of PCA. To see this, we introduce the *singular value decomposition (SVD)* of the mean-centered predictor matrix
+
+\[
+\mathbf{X}=\mathbf{U}\mathbf{S}\mathbf{V}^T, \tag{14}
+\]
+
+where $\mathbf{S}$ is a diagonal matrix with diagonal elements $s_i$. We plug this into our ridge solution $(10)$ to find that 
+
+
+\begin{align*}
+  \hat{\mathbf{y}}^{\text{ridge}}=\mathbf{X}\hat{\beta}^{\text{ridge}}&=\mathbf{X}(\mathbf{X}^T\mathbf{X}+ \lambda \mathbf{I} )^{-1}\mathbf{X}^T \mathbf{y} \\
+  &=\mathbf{U}\text{diag}\bigg\{\frac{s_i^2}{s_i^2+\lambda} \bigg\}\mathbf{U}^T\mathbf{y}.
+\end{align*}
+
+
+Similarly, if we substitute the SVD $(14)$ into our expression for PCA $(13)$, we find that 
+
+
+\begin{align*}
+\mathbf{T}&=\mathbf{X}\mathbf{W} \\
+&=\mathbf{U}\mathbf{S}\mathbf{W}^T\mathbf{W} \\
+&=\mathbf{U}\mathbf{S},
+\end{align*}
+
+
+
+so we have that $\mathbf{T}_M=\mathbf{U}_M\mathbf{S}_M$. Thus, we can write
+
+\[
+  \hat{\mathbf{y}}^{\text{PCR}}=\mathbf{X}^{\text{PCA}}\hat{\beta}^{\text{PCA}}=\mathbf{U}\text{diag}\{1_1,1_2,\dots,1_M,0,\dots,0 \}\mathbf{U}^T\mathbf{y}. \tag{15}
+\]
+
+We now implement PCR in R. First, we perform PCA using the function `prcomp()`. We make sure to standardize our predictors by including `scale. = TRUE` so that each predictor has zero mean and unit variance. This was done automatically by the `glmnet()` function, but we must standardize the predictors when using shrinkage methods as well.
+
+```{r pca}
+#perform pca
+pcs <- prcomp(super[,-82], scale. = TRUE)
+summary(pcs)
+```
+
+We see that using the first 17 components captures 95% of the variance in our feature set, while using the first 30 components captures 99% of the variance.
+
+```{r pcr}
+#define new training control using first 17 components of pca
+newcont <- trainControl(method = "cv", number = 10,
+                     preProcOptions = list(thresh = 0.95, pcaComp = 17))
+
+#train regression model with principal components as predictors
+pcr <- train(critical_temp ~ ., data = regtrain, method = "lm", preProcess = c("center", "scale", "pca"), trControl = newcont)
+
+#predict on testing data
+pred_pcr <- predict(pcr, newdata = regtest)
+
+#evaluate performance using RMSE
+postResample(pred = pred_pcr, obs = regtest$critical_temp)
+```
+
+We find that the PCR fit has an RMSE of 21.63 when evaluated on the test set.
+
+After considering all four regularization models, we conclude that lasso performed the best on our data set; elastic net performed essentially the same, which makes sense because elastic net reduces to lasso when we set $\alpha=1$. PCR performed the worst, which also makes sense because the focus of PCA is to eliminate multicollinearity, rather than optimizing for accuracy in predicting the test set.
+
+
+# Citations
+
+Hastie, T., Tibshirani, R., Friedman, J. (2009). The Elements of Statistical Learning. Springer Series in Statistics. Springer, New York, NY. [<https://doi.org/10.1007/978-0-387-84858-7_14>]
+
+Hamidieh, Kam, A data-driven statistical model for predicting the critical temperature of a superconductor, Computational Materials Science, Volume 154, November 2018, Pages 346-354, [<https://doi.org/10.1016/j.commatsci.2018.07.052>]
+
+KOKLU, M. and OZKAN, I.A., (2020), Multiclass Classification of Dry Beans Using Computer Vision and Machine Learning Techniques. Computers and Electronics in Agriculture, 174, 105507.
+DOI: [<https://doi.org/10.1016/j.compag.2020.105507>]
+
+
+
