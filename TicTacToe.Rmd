@@ -1,0 +1,161 @@
+---
+title: "Tic Tac Toe"
+author: "Theo Teske"
+date: "2023-06-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+#rm(list=ls())
+library(MASS)
+library(caret)
+library(gbm)
+library(themis)
+library(dplyr)
+library(pROC)
+library(ranger)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## TicTacToe
+
+Load in data, clean it up, look at class imbalance
+```{r cars}
+#load in data
+tic <- read.table("C:/Users/Theo/Downloads/tic-tac-toe-endgame.csv", header=TRUE,
+   sep=",")
+
+#rename columns, encode them categorically
+colnames(tic) <- c("TL", "TM", "TR", "ML", "MM", "MR", "BL", "BM", "BR", "class")
+tic <- lapply(tic, factor)
+tic <- as.data.frame(tic)
+
+#look at classes
+counts<-table(tic$class)
+barplot(counts, main="Occurrence of Outcomes for x", col=c("tomato", "forestgreen"), names.arg=c("Losses", "Wins"))
+
+```
+
+Next, train-test split
+```{r train-test split}
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+trainIndex <- createDataPartition(tic$class, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+traint <- tic[trainIndex, ]
+testt <- tic[-trainIndex, ]
+
+```
+
+## Classification
+
+try random forests
+
+```{r pressure, echo=FALSE}
+#create training control
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 5,
+                     repeats = 3,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+#create weights
+tac_weights <- ifelse(traint$class == "positive",
+                       (1/table(traint$class)[1]) * 0.5,
+                       (1/table(traint$class)[2]) * 0.5)
+
+###Ranger - Random Forests
+#create grid of hyperparameter values to try
+ranger_grid <- expand.grid(
+  mtry=c(1,3,5,7,9),
+  splitrule="gini",
+  min.node.size=c(1,5)
+)
+
+#train weighted model
+weighted_rf <- train(class ~ .,
+                      data = traint,
+                      method = "ranger",
+                      verbose = FALSE,
+                      weights = tac_weights,
+                      metric = "ROC",
+                      trControl = ctrl,
+                      tuneGrid = ranger_grid)
+
+#train smote model
+ctrl$sampling <- "smote"
+set.seed(123)
+smote_rf <- train(class ~ .,
+                   data = traint,
+                   method = "ranger",
+                   verbose = FALSE,
+                   metric = "ROC",
+                   trControl = ctrl,
+                   tuneGrid = ranger_grid)
+```
+
+evaluate random forests
+
+```{r evalrfs}
+trfw_pred <- predict(weighted_rf, testt)
+confusionMatrix(trfw_pred, testt$class)
+
+trfs_pred <- predict(smote_rf, testt)
+confusionMatrix(trfs_pred, testt$class)
+
+```
+
+ok now we try gbm
+
+```{r dum1}
+###GBM - Stochastic Gradient Boosting
+#create grid of hyperparameter values to try
+ctrl$sampling <- NULL
+gbm_grid <- expand.grid(
+  n.trees = c(100, 200, 500), 
+  interaction.depth = c(1, 3, 5),
+  shrinkage = c(0.01, 0.1, 0.2),
+  n.minobsinnode = 10 #default
+)
+
+#weighted fit
+set.seed(123)
+weighted_gbm <- train(class ~ .,
+                      data = traint,
+                      method = "gbm",
+                      distribution = "bernoulli",
+                      verbose = FALSE,
+                      weights = tac_weights,
+                      metric = "ROC",
+                      trControl = ctrl,
+                      tuneGrid = gbm_grid)
+
+#smote fit
+ctrl$sampling <- "smote"
+
+set.seed(123)
+smote_gbm <- train(class ~ .,
+                   data = traint,
+                   method = "gbm",
+                   distribution = "bernoulli",
+                   verbose = FALSE,
+                   metric = "ROC",
+                   trControl = ctrl,
+                   tuneGrid = gbm_grid)
+```
+
+now we see how it did
+
+```{r evalrfs}
+tgbmw_pred <- predict(weighted_gbm, testt)
+confusionMatrix(tgbmw_pred, testt$class)
+
+tgbms_pred <- predict(smote_gbm, testt)
+confusionMatrix(tgbms_pred, testt$class)
+
+```
+
+
