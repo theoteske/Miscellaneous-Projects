@@ -1,0 +1,113 @@
+---
+title: "ExperimentingKeras"
+output: pdf_document
+date: "2023-06-05"
+---
+
+```{r setup, include=FALSE}
+library(keras)
+library(tensorflow)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## MNIST
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#just reading in the data
+nist <- dataset_mnist()
+```
+
+```{r ade}
+#just train test split
+mnist <- nist
+train_images <- mnist$train$x
+train_labels <- mnist$train$y
+test_images <- mnist$test$x
+test_labels <- mnist$test$y
+```
+
+```{r next}
+#network architecture
+network <- keras_model_sequential() %>%
+ layer_dense(units = 512, activation = "relu", input_shape = c(28 * 28)) %>% #type of layer is dense, activation fn is relu
+ layer_dense(units = 10, activation = "softmax")
+# layer creates 10 probabilities, one for each number
+
+#setting up how to carry out the train, setting loss function, choosing metric
+network %>% compile(
+ optimizer = "rmsprop",
+ loss = "categorical_crossentropy",
+ metrics = c("accuracy")
+)
+
+#putting our input into the right format for the nn
+train_images <- array_reshape(train_images, c(60000, 28 * 28))
+train_images <- train_images / 255
+test_images <- array_reshape(test_images, c(10000, 28 * 28))
+test_images <- test_images / 255
+
+#encoding our labels, same thing as as.factor()
+train_labels <- to_categorical(train_labels)
+test_labels <- to_categorical(test_labels)
+```
+
+```{r train}
+#actually train the nn
+network %>% fit(train_images, train_labels, epochs = 5, batch_size = 128)
+
+#evaluate nn on test set
+metrics <- network %>% evaluate(test_images, test_labels)
+paste("Test set metrics: ", metrics)
+```
+RNN takes as input a sequence of vectors, which are encoded as a 2d tensor of size (timesteps, input_features)
+loop over timesteps
+at each time step:
+ - consider its current state at t and input at t of shape (input_features)
+ - combine them to obtain output at t
+ - set the state for next step to be this output
+for first timestep, initialize state as all-zero vector
+
+in pseudocode:
+state t=0
+
+for (input_t in input_sequence) { #iterate over the input sequence
+  output_t <- f(input_t, state_t) #combine input and state
+  
+  state_t <- output_t
+}
+
+in actual r code:
+```{r fake}
+#number of timesteps in series, T
+timesteps <- 100
+#number of inputs at each timestep
+input_features <- 32
+#output at each time step as fn of inputs -> 2*(num of inputfts)
+output_features <- 64
+#input data, random for sake of example
+random_array <- function(dim) {
+ array(runif(prod(dim)), dim = dim)
+}
+inputs <- random_array(dim = c(timesteps, input_features))
+
+#initial state all zero vector
+state_t <- rep_len(0, length = c(output_features))
+
+#create random weight matrices
+W <- random_array(dim = c(output_features, input_features))
+U <- random_array(dim = c(output_features, output_features))
+b <- random_array(dim = c(output_features, 1))
+
+#create output sequence
+output_sequence <- array(0, dim = c(timesteps, output_features))
+for (i in 1:nrow(inputs)) {
+ input_t <- inputs[i,]
+ output_t <- tanh(as.numeric((W %*% input_t) + (U %*% state_t) + b))
+ output_sequence[i,] <- as.numeric(output_t)
+ state_t <- output_t
+}
+```
