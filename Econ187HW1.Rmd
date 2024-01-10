@@ -1,0 +1,461 @@
+---
+title: "Econ 187 HW1"
+author: "Theo Teske"
+date: "2023-04-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(MASS)
+library(class)
+library(ggplot2)
+library(boot)
+#rm(list=ls())
+```
+
+## Exercise 4.5
+
+(a) If the Bayes decision boundary is linear, we expect QDA to perform better on the training set because greater flexibility allows for a tighter fit, but we expect LDA to perform better on the test set as it's likely that QDA suffers from overfitting.
+
+(b) If the Bayes decision boundary is non-linear, then we expect QDA to perform better on both the training set and the test set as its greater flexibility allows it to better capture the complexity of the decision boundary.
+
+(c) In general, as the sample size n increases, we expect the test prediction accuracy of QDA to improve relative to LDA because greater flexibility will yield a better fit and the larger sample size will cause the variance of the sample mean, and therefore its standard error, to decrease.
+
+(d) False. QDA will be able to achieve a superior training error rate due to its flexibility, but the model will likely suffer from overfitting, resulting in worse performance on the test set relative to LDA.
+
+## Exercise 4.10
+
+```{r 410a}
+weekly <- as.data.frame(Weekly)
+
+summary(Weekly)
+pairs(Weekly)
+cor(Weekly[, -9])
+
+```
+
+Looking at the output from the `cor()` function, the correlations between the lag variables and the current day's returns are all near zero. This is supported by the correlogram. However, we do observe a positive correlation between the Year and and Volume variables (i.e. the volume of shares traded each day is increasing over time).
+
+```{r 410a extra}
+plot(weekly$Year, weekly$Volume, xlab="Year", ylab="Volume")
+
+```
+
+```{r 410b}
+glm.fits <- glm(
+    Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume,
+    data = Weekly, family = binomial
+  )
+summary(glm.fits)
+
+```
+
+The Lag2 variable appears to be statistically significant, as its $p$-value is 0.0296, which is less than $\alpha = 0.05$.
+
+```{r 410c}
+#check that 1 is Up and 0 is Down
+contrasts(weekly$Direction)
+
+#make prediction vector
+glm.probs <- predict(glm.fits, type = "response")
+glm.pred <- rep("Down", 1089)
+glm.pred[glm.probs > .5] = "Up"
+
+#make confusion matrix
+table(glm.pred, weekly$Direction)
+
+```
+
+We calculate the overall fraction of correct predictions:
+
+```{r 410c c}
+(54+557)/1089
+```
+
+We observe that the confusion matrix suggests that logistic regression generates a lot of incorrect "Up" predictions, i.e. it predicts many days to be "Up" days when in reality they are "Down".
+
+```{r 410d}
+#create training/testing data
+training <- subset(Weekly, Year <= 2008)
+testing <- subset(Weekly, Year > 2008)
+
+#perform logistic regression on training data with Lag2 as only predictor
+glm.weekly <- glm(Direction ~ Lag2, data = training, family = binomial)
+
+#make prediction vector
+glm.wprobs <- predict(glm.weekly, testing, type = "response")
+glm.wpred <- rep("Down", 104)
+glm.wpred[glm.wprobs > .5] = "Up"
+
+#make confusion matrix
+table(glm.wpred, testing$Direction)
+
+```
+
+We calculate the fraction of correct predictions for the testing data using a logistic regression:
+
+```{r 410d e}
+paste("Logistic regression accuracy: ", (9+56)/104)
+```
+```{r 410e}
+#perform LDA on training data with Lag2 as only predictor
+lda.fit <- lda(Direction ~ Lag2, data = training)
+
+#make prediction vector
+lda.pred <- predict(lda.fit, testing)
+
+#make confusion matrix
+table(lda.pred$class, testing$Direction)
+
+```
+This confusion matrix is identical to the one using logistic regression.
+
+```{r 410f}
+#perform QDA on training data with Lag2 as only predictor
+qda.fit <- qda(Direction ~ Lag2, data = training)
+
+#make prediction vector
+qda.pred <- predict(qda.fit, testing)
+
+#make confusion matrix
+table(qda.pred$class, testing$Direction)
+
+```
+
+QDA predicts that the market will go up every day in the testing set. We find its accuracy:
+
+```{r 410f e}
+paste("QDA accuracy: ", 61/104)
+```
+
+
+
+```{r 410g}
+#perform kNN
+set.seed(1)
+train <- data.frame(training$Lag2)
+test <- data.frame(testing$Lag2)
+knn.pred=knn(train, test, training$Direction, k=1)
+
+#make confusion matrix
+table(knn.pred, testing$Direction)
+```
+
+We calculate the accuracy:
+
+```{r 410g e}
+paste("KNN with K=1 accuracy: ", (21+31)/104)
+```
+
+Judging by the accuracy measures, it appears that LDA and logistic regression are both equally good at predicting the test set. QDA doesn't perform as well, and KNN with K=1 performs the worst.
+
+We now experiment with the above methods.
+
+```{r 410logitex1}
+#perform logistic regression on training data with Lag1 and Lag2
+logit <- glm(Direction ~ Lag1+Lag2, data = training, family = binomial)
+
+#make prediction vector
+logit.probs <- predict(logit, testing, type = "response")
+logit.pred <- rep("Down", 104)
+logit.pred[glm.wprobs > .5] = "Up"
+
+#make confusion matrix
+table(logit.pred, testing$Direction)
+
+```
+After performing a logistic regression on both the Lag1 and Lag2 predictors, we get an identical confusion matrix to the one generated by the logistic regression on Lag1 alone.
+
+```{r 410ldaex}
+#perform LDA on training data with Lag2, Lag1, and interaction
+lda.exp <- lda(Direction ~ Lag1+Lag2+Lag1*Lag2, data = training)
+
+#make prediction vector
+lda.prexp <- predict(lda.exp, testing)
+
+#make confusion matrix
+table(lda.prexp$class, testing$Direction)
+
+```
+
+Looking at the confusion matrix generated after performing LDA on Lag1, Lag2, and an interaction of the two, it clearly has a lower accuracy (of $60/104 \approx 0.58$) than our previous LDA using only Lag2.
+
+```{r 410qdaex}
+#perform QDA on training data with Lag2, and Lag2^2
+qda.exp <- qda(Direction ~ Lag2+Lag2*Lag2, data = training)
+
+#make prediction vector
+qda.prexp <- predict(qda.exp, testing)
+
+#make confusion matrix
+table(qda.prexp$class, testing$Direction)
+
+```
+
+The confusion matrix generated after performing QDA on Lag2 and its square is identical to the confusion matrix generated by our previous QDA using only Lag2.
+
+```{r 410knnex}
+#perform kNN
+set.seed(1)
+train <- data.frame(training$Lag2)
+test <- data.frame(testing$Lag2)
+knn.pre1=knn(train, test, training$Direction, k=1)
+knn.pre3=knn(train, test, training$Direction, k=3)
+knn.pre5=knn(train, test, training$Direction, k=5)
+knn.pre7=knn(train, test, training$Direction, k=7)
+
+#make confusion matrix
+table(knn.pre1, testing$Direction)
+table(knn.pre3, testing$Direction)
+table(knn.pre5, testing$Direction)
+table(knn.pre7, testing$Direction)
+```
+
+After performing KNN using $K=1,3,5,7$, we find that the highest accuracy is $\frac{16+42}{104}\approx0.558$, which is achieved with both $K=3$ and $K=7$.
+
+Upon experimentation, we conclude that two methods performed equally well and superior to all others on the test data: logistic regression and LDA, both using Lag2 as the sole predictor. This suggests that the Bayes decision boundary is linear.
+
+## Exercise 4.11
+
+```{r 411a}
+#create mpg01 variable
+m <- median(Auto$mpg)
+mpg01 <- numeric(392)
+
+for(i in seq(1,392)){
+  if(Auto$mpg[i] > m)
+    mpg01[i]<-1
+}
+
+#make new dataframe
+auto <- as.data.frame(Auto)
+init <- auto[-1]
+df <- cbind(init,mpg01)
+
+#create plots and correlation data
+pairs(df)
+cor(df[, -8])
+ggplot(stack(df), aes(x = ind, y = values)) +
+  geom_boxplot()
+
+```
+
+Looking at the pairwise correlations generated by `cor()`, it appears that the cylinders, displacement, horsepower, and weight variables all have strong correlations with mpg01. This is supported by the scatterplots in the correlogram.
+
+```{r 411cd}
+set.seed(1)
+
+#use 70% of dataset as training set and 30% as test set
+sample <- sample(c(TRUE, FALSE), nrow(df), replace=TRUE, prob=c(0.7,0.3))
+mtrain <- df[sample, ]
+mtest <- df[!sample, ]
+
+#perform LDA using relevant variables
+mlda.fit <- lda(mpg01 ~ cylinders+displacement+horsepower+weight, data = mtrain)
+
+#make prediction vector
+mlda.pred <- predict(mlda.fit, mtest)
+
+#make confusion matrix
+table(mlda.pred$class, mtest$mpg01)
+
+```
+
+We find the test error for the LDA model:
+
+```{r 411d}
+paste("LDA test error: ", (2+11)/112)
+
+```
+
+```{r 411e}
+#perform QDA using relevant variables
+mqda.fit <- qda(mpg01 ~ cylinders+displacement+horsepower+weight, data = mtrain)
+
+#make prediction vector
+mqda.pred <- predict(mqda.fit, mtest)
+
+#make confusion matrix
+table(mqda.pred$class, mtest$mpg01)
+
+```
+
+We find the test error for the QDA model:
+
+```{r 411ee}
+paste("QDA test error: ", (6+11)/112)
+
+```
+
+```{r 411f}
+#perform logistic regression using relevant variables
+mglm <- glm(mpg01 ~ cylinders+displacement+horsepower+weight, data = mtrain, family = binomial)
+
+#make prediction vector
+mgprobs <- predict(mglm, mtest, type = "response")
+mgpred <- rep(0, 104)
+mgpred[mgprobs > .5] = 1
+
+#make confusion matrix
+table(mgpred, mtest$mpg01)
+
+```
+
+We find the test error for the logistic regression model:
+
+```{r 411fe}
+paste("Logistic regression test error: ", (9+3)/112)
+
+```
+
+```{r 411g}
+#perform KNN with K=1,3,5,7
+set.seed(1)
+ktrain <- data.frame(mtrain$cylinders, mtrain$displacement, mtrain$horsepower, mtrain$weight)
+ktest <- data.frame(mtest$cylinders, mtest$displacement, mtest$horsepower, mtest$weight)
+knn.pred1=knn(ktrain, ktest, mtrain$mpg01, k=1)
+knn.pred3=knn(ktrain, ktest, mtrain$mpg01, k=3)
+knn.pred5=knn(ktrain, ktest, mtrain$mpg01, k=5)
+knn.pred7=knn(ktrain, ktest, mtrain$mpg01, k=7)
+
+#make confusion matrices
+table(knn.pred1, mtest$mpg01)
+table(knn.pred3, mtest$mpg01)
+table(knn.pred5, mtest$mpg01)
+table(knn.pred7, mtest$mpg01)
+
+```
+
+We calculate the test error for each value of $K$:
+
+```{r 411ge}
+paste("KNN with k=1 test error: ", (8+10)/112)
+paste("KNN with k=3 test error: ", (13+4)/112)
+paste("KNN with k=5 test error: ", (9+5)/112)
+paste("KNN with k=7 test error: ", (10+7)/112)
+
+```
+
+It seems that the value of $K=5$ performs best on this test data.
+
+## Exercise 5.7
+
+```{r 57a}
+#logistic regression on Lag1 and Lag2
+fglm <- glm(Direction~Lag1+Lag2, data=Weekly, family=binomial)
+
+```
+
+```{r 57b}
+#logistic regression without first observation
+nglm <- glm(Direction~Lag1+Lag2, data=Weekly[-1,], family=binomial)
+```
+
+```{r 57c}
+#predict first observation using model from (b)
+predict(nglm, Weekly[1,])
+```
+Because the model from (b) asserts that $P(\text{Direction} = ``\text{Up}"|\text{Lag1, Lag2})=0.2875<0.5$, we predict that "Down" is the direction of the first observation. Indeed,when we check:
+
+```{r 57c extra}
+print(Weekly$Direction[1])
+
+```
+
+So, this observation was correctly classified.
+
+```{r 57d}
+#find number of observations in the data set
+n <- nrow(Weekly)
+
+#create count of errors
+count <- 0
+
+#for each observation, determine if an error is made
+for(i in seq(1,n)){
+  dum <- "Down"
+  reg <- glm(Direction~Lag1+Lag2, data=Weekly[-i,], family=binomial)
+  if(predict(reg, Weekly[i,])>0.5)
+    dum <- "Up"
+  if(dum != Weekly$Direction[i])
+    count=count+1
+}
+
+#find average of error vector
+paste("LOOCV estimate for the test error: ", count/n)
+
+```
+We find that 54.5% of observations were incorrectly classified during the n repeated model fittings.
+
+## Exercise 5.9
+
+```{r 59ab}
+#estimate for population mean of medv, call it mu-hat
+mu_hat <- mean(Boston$medv)
+
+
+#estimate for standard error of mu-hat
+se_m <- sqrt(var(Boston$medv)/nrow(Boston))
+se_m
+
+```
+We find that we can expect our sample estimate $\hat{\mu}$ to differ from the true value of $\mu$ in the population by 0.40886.
+
+```{r 59c}
+#create function for mu
+mu.fn <- function(data, index){
+  mu <- mean(data[index])
+  return(mu)
+}
+
+#bootstrap using R=1000 estimates
+boot(Boston$medv,mu.fn,R=1000)
+
+```
+The `boot()` function estimates that the standard error of $\hat{\mu}$ is 0.4101, which is very close to the answer from part (b).
+
+```{r 59d}
+#95% confidence interval using bootstrap estimate
+paste("Confidence interval using bootstrap estimate: ", mu_hat - 2*0.4101314, mu_hat + 2*0.4101314)
+
+#using t-test
+t.test(Boston$medv)
+
+```
+The confidence interval generated by using the bootstrap estimate for the standard error of $\hat{\mu}$ is exceedingly close to the confidence interval generated by performing a t-test.
+
+```{r 59ef}
+#estimate for median
+med_hat <- median(Boston$medv)
+
+#create function for median
+med.fn <- function(data, index){
+  med <- median(data[index])
+  return(med)
+}
+
+#bootstrap using R=1000 estimates
+boot(Boston$medv,med.fn,R=1000)
+
+```
+
+The bootstrap estimate for the standard error of $\hat{\mu}_{med}$ is 0.377.
+
+```{r 59gh}
+#estimate for tenth percentile
+ten_hat <- quantile(Boston$medv, probs=0.1)
+
+#create function for median
+ten.fn <- function(data, index){
+  ten <- quantile(data[index], probs=0.1)
+  return(ten)
+}
+
+#bootstrap using R=1000 estimates
+boot(Boston$medv,ten.fn,R=1000)
+
+```
+
+The bootstrap estimate for the standard error of $\hat{\mu}_{0.1}$ is 0.49.

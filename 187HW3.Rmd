@@ -1,0 +1,673 @@
+---
+title: "187 HW 3"
+output: pdf_document
+date: "2023-05-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(ISLR2)
+library(MASS)
+library(class)
+library(ggplot2)
+library(boot)
+library(caret)
+library(class)
+library(nnet)
+library(glmnet)
+library(elasticnet)
+library(pls)
+library(leaps)
+library(splines)
+library(gam)
+library(tree)
+library(data.table)
+library(randomForest)
+library(gbm)
+library(e1071)
+library(ROCR)
+#rm(list=ls())
+#options(warn=-1)
+```
+
+## Exercise 8.8
+
+We partition our data into a 75%/25% training-testing split.
+
+```{r 88a}
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+trainIndex <- createDataPartition(Carseats$Sales, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+trainp1 <- Carseats[trainIndex, ]
+testp1 <- Carseats[-trainIndex, ]
+
+```
+
+Next, we fit an unpruned regression tree to the training set, aiming to predict the `Sales` variable.
+
+```{r 88b}
+#fit a single regression tree
+regtreep1 <- tree(Sales ~ ., trainp1)
+summary(regtreep1)
+
+#plot the tree
+plot(regtreep1)
+text(regtreep1, pretty = 0)
+
+#evaluate its performance on the test set
+rtpredp1<-predict(regtreep1, newdata=testp1)
+plot(rtpredp1, testp1$Sales)
+abline(0,1)
+paste("Test MSE for unpruned tree: ", mean((rtpredp1-testp1$Sales)^2))
+```
+
+The regression tree has 17 terminal nodes, or leaves. The tree first splits along the categorical variable `ShelveLoc`, separating observations with a level of `Good` from those with a level of `Bad` or `Medium`, and on the next layer the model performs two splits along `Price`; thus, the model has found that these two variables are the most important indicators of `Sales`. We obtain a test MSE of 5.15, so on average the value for `Sales` predicted by the unpruned regression tree differs from the observed value in the test set by 5.15.
+
+Now, we determine whether pruning the tree will improve performance on the test set through a 10-fold cross-validation.
+
+```{r 88c}
+#perform cv to determine optimal tree size
+set.seed(334)
+cv.rtp1 <- cv.tree(regtreep1)
+cv.rtp1
+
+#plot size vs deviance
+par(mfrow = c(1, 2))
+plot(cv.rtp1$size, cv.rtp1$dev, type = "b")
+
+```
+
+In this case, cross-validation selects the most complex tree, so pruning shouldn't lead to a decrease in test MSE. We can verify this with a tree using only 11 terminal nodes, which performs well according to the cross-validation.
+
+```{r 88c2}
+#create pruned tree
+prune.rtp1 <- prune.tree(regtreep1, best = 11)
+plot(prune.rtp1)
+text(prune.rtp1, pretty = 0)
+
+#evaluate performance
+rtprunp1<-predict(prune.rtp1, newdata=testp1)
+paste("Test MSE for pruned tree: ", mean((rtprunp1-testp1$Sales)^2))
+```
+
+We find that in fact, pruning the tree did slightly improve the test MSE to 4.92. We now perform bagging on the training set, using the `randomForest()` function with `mtry=10` to specify that we want to consider all ten predictors at each split.
+
+```{r 88d}
+set.seed(1)
+
+#train the model with all predictors
+bagp1 <- randomForest(Sales~., data=trainp1, mtry=10, importance=TRUE)
+
+#evaluate bagging performance on the test set
+bagpred1<-predict(bagp1, newdata=testp1)
+paste("Test MSE for bagging: ", mean((bagpred1-testp1$Sales)^2))
+
+#print and plot importance of variables
+importance(bagp1)
+varImpPlot(bagp1)
+```
+
+We get a test MSE of 2.51 using the bagging method. As expected from our analysis of the single regression tree, the two most important variables in terms of their relative percent increase in MSE are `ShelveLoc` and `Price`.
+
+Finally, we use random forests to analyze the data, now using a 10-fold cross-validation repeated three times to determine the optimal value of `mtry`.
+
+```{r 88e}
+#create train control: 10-fold cv, repeated 3 times
+controlp1 <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+#set seed for reproducibility
+set.seed(1)
+
+#have caret try out mtry=1,2,...,10
+rfp1_grid <- expand.grid(mtry=c(1,2,3,4,5,6,7,8,9,10))
+
+rfp1 <- train(Sales ~ .,
+                   data = trainp1,
+                   method = 'rf',
+                   tuneGrid  = rfp1_grid, 
+                   trControl = controlp1,
+                    importance=TRUE)
+
+print(rfp1)
+
+#evaluate performance on test set
+rfp1pred <- predict(rfp1, newdata=testp1)
+paste("Test MSE with random forests: ", RMSE(pred=rfp1pred, obs=testp1$Sales)^2)
+```
+
+We find that the optimal value is `mtry=10`, which is equivalent to bagging. So, random forests was unable to improve on bagging, and the test MSE of 2.46 is essentially the same as the one we got using bagging. We note that the error rate in terms of both MSE and MAE decreases monotonically as $m$, i.e. the value of `mtry`, increases.
+
+```{r 88eimp}
+#print and plot importance of variables
+importance(rfp1$finalModel)
+varImpPlot(rfp1$finalModel)
+
+```
+
+The results for variable importance are identical to those obtained using bagging, as `ShelveLoc` and `Price` remain the most important variables by a large margin.
+
+## Exercise 8.10
+
+We prepare our data: we first remove the observations for whom the salary information is unknown, and then log-transform the salaries; next, we create a training set consisting of the first 200 observations, and a test set consisting of the remaining observations.
+
+```{r 810ab}
+#remove NAs from salary
+missing <- is.na(Hitters$Salary)
+hitters <- subset(Hitters, subset=!missing)
+
+#log-transform salaries
+hitters$Salary <- log(hitters$Salary)
+
+#train-test split
+train2 <- hitters[1:200, ]
+test2 <- hitters[201:263, ]
+
+```
+
+Now, we perform boosting on the training set with 1000 trees for a range of six values of the shrinkage parameter $\lambda$. 
+
+```{r 810c}
+#create grid of hyperparameter values
+gridp2 <- expand.grid(
+  n.trees = 1000, 
+  shrinkage = c(0.01, 0.05, 0.1, 0.2, 0.4, 0.6),
+  interaction.depth = 1, #default value
+  n.minobsinnode = 10
+)
+
+#set seed for reproducibility
+set.seed(99)
+
+#train model using cv with caret
+gbmp2 <- train(
+  Salary ~ .,
+  data = train2,
+  method = "gbm",
+  distribution = "gaussian",
+  trControl = trainControl(method = "cv", number = 10, verboseIter = FALSE),
+  verbose = FALSE,
+  tuneGrid = gridp2
+)
+
+#plot the shrinkage values vs training set MSE
+plot(gbmp2$results$shrinkage, (gbmp2$results$RMSE)^2, type="b", lwd=1.8,col="darkred", xlab="Shrinkage parameter value", ylab="Training set MSE", main="Training MSE at each lambda value")
+
+```
+
+We observe that the training set MSE decreases as the value of the shrinkage parameter $\lambda$ increases. The relationship between the two appears visually to be logarithmic, as the rate of the training set MSE's increase is much lower between $\lambda=0.4$ and $\lambda=0.6$ than it had been up until $\lambda=0.4$.
+
+```{r 810d}
+#determine test set MSE at each value of lambda
+shrink <- gbmp2$results$shrinkage
+testmse <- c()
+count<-1
+for(i in shrink){
+  set.seed(1)
+  dump2 <- gbm(Salary ~ ., data = train2,
+    distribution = "gaussian", n.trees = 1000,
+    shrinkage = i)
+  dumyhat <- predict(dump2,
+    newdata = test2, n.trees = 1000, shrinkage=i)
+  testmse[count] <- mean((dumyhat - test2$Salary)^2)
+  count=count+1
+}
+
+#plot shrinkage values vs test mse
+plot(shrink, testmse, type="b", lwd=1.8,col="blue", xlab="Shrinkage parameter value", ylab="Test set MSE", main="Test MSE at each lambda value")
+
+```
+
+We observe that the test set MSE decreases until it attains its minimum value at $\lambda=0.1$, after which it increases steadily. Therefore, the optimal boosted model has a test MSE of 0.253.
+
+For the sake of comparison, we will plot the test MSE of the boosted model, a linear regression model and a ridge regression model.
+
+```{r 810e}
+set.seed(12)
+#set up training control: 10-fold cv repeated 3 times
+ctrlp2 <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+#evaluate linear regression
+regp2 <- train(Salary ~ ., data = train2, method = "lm", 
+              trControl = ctrlp2)
+
+regpred <- predict(regp2, newdata=test2)
+regmse <- mean((regpred-test2$Salary)^2)
+
+#evaluate ridge regression
+ridgrid = 10^seq(10, -2, length = 100)
+
+ridgep2 <- train(Salary ~ ., data = train2, method = "glmnet", 
+                 preProcess = c("center", "scale"), 
+                 tuneGrid = expand.grid(alpha=0, lambda=ridgrid), 
+                 trControl = ctrlp2)
+
+ridgepred <- predict(ridgep2, newdata=test2)
+ridgemse <- mean((ridgepred-test2$Salary)^2)
+
+#make barplot of test MSE for each model
+msep2 <- c(testmse[3], regmse, ridgemse)
+barplot(msep2, names.arg=c("GBM", "OLS", "Ridge"), xlab="", ylab="Test MSE", main="Comparing Test MSE of each model", col=c("darkgreen", "royalblue", "maroon"))
+
+```
+
+We observe that ridge regression slightly outperforms ordinary least squares, as is to be expected, but both of the regression approaches are greatly outperformed by the boosted model.
+
+```{r 810f}
+#plot variable importance for 5 most important variables
+summary(gbmp2, cBars=5, las=1, main="Variable importance in boosted model")
+
+```
+
+Note that `CAtBat` is by far the most important variable in terms of relative influence, while the next most important are `CRuns` and `CRBI`, respectively.
+
+Finally, we apply bagging to the training set, again using a 10-fold cross-validation repeated three times to evaluate its performance.
+
+```{r 810g}
+set.seed(1)
+
+#train the model with all predictors
+bagp2 <- train(Salary~., data=train2, method="rf", tuneGrid=expand.grid(mtry=19), importance=TRUE, trControl=ctrlp2)
+bagp2
+
+#evaluate bagging performance on the test set
+bagpred2<-predict(bagp2, newdata=test2)
+paste("Test MSE for bagging: ", mean((bagpred2-test2$Salary)^2))
+
+```
+
+Bagging has a test MSE of 0.23, which slightly outperforms the boosted model. So, bagging performed the best on this data set out of all the methods we tried.
+
+## Exercise 8.12
+
+We study radar data that was collected by a system consisting of a phased array of 16 high-frequency antennas. The targets were free electrons in the ionosphere. "Good" radar returns are those showing evidence of some type of structure in the ionosphere. "Bad" returns are those that do not; their signals pass through the ionosphere. This data was retreived from the UCI Machine Learning Repository, here: <https://archive.ics.uci.edu/ml/datasets/Ionosphere>.
+
+We will first read in the data and perform a 75%/25% training-testing split.
+
+```{r 812a}
+#load in data
+ion <- read.table("C:/Users/Theo/Downloads/ionosphere_csv.csv", header=TRUE, sep=",")
+ion <- na.omit(ion)
+ion <- ion[,-2]
+
+#make sure target variable is a factor and column names are ok
+ion$class <- as.factor(ion$class)
+colnames(ion) <- make.names(colnames(ion))
+
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+regtrainIndex <- createDataPartition(ion$class, p = .75, list = FALSE, times = 1)
+iontrain <- ion[regtrainIndex, ]
+iontest <- ion[-regtrainIndex, ]
+
+```
+
+We will compare the performance of five different models in performing the binary classification task in terms of the test set accuracy. The five models in question are logistic regression, LDA, bagging, random forests, and boosting. We will proceed by using the `caret` library, with the same training control, a 10-fold cross-validation repeated three times, used to train each model. We then evaluate each trained model on the test set and find its accuracy.
+
+First, we train and evaluate a logistic regression model.
+
+```{r 812b}
+#create vector of accuracies
+acc8 <- c()
+
+set.seed(1)
+#perform linear discriminant analysis
+log_fit <- train(class ~ ., 
+             data = iontrain, 
+             method = "glmnet",
+             family="binomial",
+             trControl = ctrlp2,
+             verbose = FALSE)
+
+#predict testing set and create confusion matrix
+log_pred <- predict(log_fit, newdata = iontest)
+postResample(log_pred, iontest$class)
+```
+We make a note of the accuracy for this method in our accuracy vector, then move on to LDA.
+
+```{r 812c}
+#note logit accuracy
+acc8[1] <- 0.8275862
+
+set.seed(3)
+#perform linear discriminant analysis
+lda_fit <- train(class ~ ., 
+             data = iontrain, 
+             method = "lda",
+             trControl = ctrlp2,
+             verbose = FALSE)
+
+#predict testing set and create confusion matrix
+lda_pred <- predict(lda_fit, newdata = iontest)
+postResample(lda_pred, iontest$class)
+```
+
+We now move on to bagging.
+
+```{r 812d}
+#note lda accuracy
+acc8[2] <- 0.8505747
+
+set.seed(1)
+#perform bagging by setting mtry=33=p
+bag_fit <- train(class ~ .,
+                   data = iontrain,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneGrid = expand.grid(mtry=33),
+                   trControl = ctrlp2, 
+                   verbose = FALSE)
+
+#predict testing set
+bag_pred <- predict(bag_fit, newdata = iontest)
+postResample(bag_pred, iontest$class)
+```
+
+Next, we perform random forests.
+
+```{r 812e}
+#note bagging accuracy
+acc8[3] <- 0.8965517
+
+set.seed(31)
+#perform random forests by giving caret grid of 20 mtry values
+gridrf8 <- expand.grid(mtry = c(1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 22, 23, 25, 27, 30, 31, 32, 33))
+
+rf_fit <- train(class ~ .,
+                   data = iontrain,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneGrid = gridrf8,
+                   trControl = ctrlp2, 
+                   verbose = FALSE)
+
+#output optimal mtry value
+paste("Optimal mtry value is: ", rf_fit$bestTune)
+
+#predict testing set
+rf_pred <- predict(rf_fit, newdata = iontest)
+postResample(rf_pred, iontest$class)
+
+```
+
+
+we note that the optimal value of `mtry` was chosen through repeated cross-validation to be $m=4$. Finally, we apply boosting.
+
+```{r 812f}
+#note random forests accuracy
+acc8[4] <- 0.8850575
+
+#create grid of hyperparameter values to try
+gbmgrid8 <- expand.grid(
+  n.trees = c(100, 200, 300, 400, 500), 
+  interaction.depth = c(1, 2, 3, 5),
+  shrinkage = c(0.01, 0.1, 0.2),
+  n.minobsinnode = c(3, 5, 10) #try a smaller value bc not very large training sample, default is 10
+)
+
+#set seed for reproducibility
+set.seed(99)
+
+#train model using cv with caret
+gbm_fit <- train(
+  class ~ .,
+  data = iontrain,
+  method = "gbm",
+  distribution = "bernoulli",
+  trControl = ctrlp2,
+  verbose = FALSE,
+  metric = 'Accuracy',
+  tuneGrid = gbmgrid8
+)
+
+#output optimal hyperparameter values
+gbm_fit$bestTune
+
+#predict test set and evaluate
+gbm_pred <- predict(gbm_fit, newdata = iontest)
+postResample(gbm_pred, iontest$class)
+
+```
+
+We note that the optimal hyperparameter values chosen through repeated cross-validation were `ntrees = 100`, `interaction.depth = 2`, `shrinkage = 0.2`, and `n.minobsinnode = 5`. Finally, we can create a plot to compare the performance of each model on the test set and discuss the results.
+
+```{r 812g}
+#note gbm accuracy
+acc8[5] <- 0.8965517
+
+#make barplot of test set MSE for each model
+barplot(acc8, names.arg=c("Logit", "LDA", "Bag", "RF", "Boost"), xlab="", ylab="Test MSE", main="Comparing Test Set MSE of each Model", col=c("darkgreen", "royalblue", "maroon", "darkorange", "purple"), ylim=c(0.8, 0.95))
+```
+
+We observe that bagging, random forests, and boosting all performed comparably well and all significantly outperformed both LDA and logistic regression. Of the tree-based models, bagging and boosting performed essentially identically and both slightly outperformed random forests. Logistic regression performed the worst on this problem. Overall, the  performances of each model suggest that the Bayes decision boundary is nonlinear.
+
+## Exercise 9.5
+
+We begin by generating a data set with n = 500 and p = 2, such that the observations belong to two classes with a quadratic decision boundary between them.
+
+```{r 95a}
+set.seed(6)
+
+#generate data set
+x1=runif (500) -0.5
+x2=runif (500) -0.5
+y=1*(x1^2-x2^2 > 0)
+```
+
+Next, we plot the observations, colored according to their class labels $Y$. Below, the class labeled 1 is in red.
+
+```{r 95b}
+#plot observations w/ coloring by class label
+colors <- ifelse(y == 1, "brown2", "royalblue")
+plot(x1,x2,pch = 16,ylim=c(-0.52,0.52), xlim=c(-0.52,0.52), col=colors, main="Colored according to class labels")
+
+```
+
+Observe that the decision boundary is quadratic. We fit a logistic regression model to the data, using $X1$ and $X2$ as predictors.
+
+```{r 95c}
+#fit simple logit model
+glm_fit <- glm(y~x1+x2, family=binomial)
+summary(glm_fit)
+
+```
+
+We observe that neither predictor is significant, as each p-value is large. We apply the to the training data in order to obtain a predicted class label for each training observation, then plot the observations, colored according to the predicted class labels.
+
+```{r 95d}
+#predict logit on training set
+glm.probs <- predict(glm_fit, type = "response")
+glm.pred <- numeric(500)
+glm.pred[glm.probs > .5] = 1
+
+#plot w/ predicted coloring
+colors <- ifelse(glm.pred == 1, "darkgoldenrod2", "darkolivegreen4")
+plot(x1, x2, pch = 16,ylim=c(-0.52,0.52), xlim=c(-0.52,0.52), col=colors, main="Colored according to simple logit")
+```
+
+The decision boundary is clearly linear. Now we fit a logistic regression model to the data using various functions of $X1$ and $X2$ (namely, $X1$, $X2$, $X2^2$, $X1X2$, and $\exp(X1)$ as predictors.
+
+```{r 95e}
+#fit logit w/ nonlinear fns of predictors
+product = x1*x2
+glm_fit0 <- glm(y~x1+poly(x2, 2)+product+exp(x1), family=binomial)
+summary(glm_fit0)
+
+```
+
+Again, we plot the observations, colored according to the new predicted class labels.
+
+```{r 95f}
+#predict nonlinear logit on training set
+glm.probs0 <- predict(glm_fit0, type = "response")
+glm.pred0 <- numeric(500)
+glm.pred0[glm.probs0 > .5] = 1
+
+#plot w/ new coloring
+colors <- ifelse(glm.pred0 == 1, "darkgoldenrod2", "darkolivegreen4")
+plot(x1, x2, pch = 16,ylim=c(-0.52,0.52), xlim=c(-0.52,0.52), col=colors, main="Colored according to nonlinear logit")
+
+```
+
+This decision boundary is obviously nonlinear, and it already looks like a very good approximation of the true decision boundary. We proceed to fit a support vector classifier to the data with X1 and X2 as predictors, then plot the observations, colored according to the new predicted class labels.
+
+```{r 95g}
+#fit svc and predict on training set
+dat=data.frame(x1, x2, y=as.factor(y))
+svm_fit0 <- svm(y~., data=dat, kernel ="linear", cost=10,scale=FALSE)
+svm_pred0 <- predict(svm_fit0, type="response")
+
+#plot w/ new coloring
+colors <- ifelse(svm_pred0 == 1, "darkslategray3", "plum3")
+plot(x1, x2, pch = 16,ylim=c(-0.52,0.52), xlim=c(-0.52,0.52), col=colors, main="Colored according to SVC")
+
+```
+
+The decision boundary predicted by the support vector classifier is linear, as expected. Finally we fit a SVM using a nonlinear kernel to the data and once again, plot the observation colored according to the new predicted class labels.
+
+```{r 95h}
+#fit svm and predict on training set
+dat=data.frame(x1, x2, y=as.factor(y))
+svm_fit <- svm(y~., data=dat, kernel ="radial", gamma=1.2, cost=2.5,scale=FALSE)
+svm_pred <- predict(svm_fit, type="response")
+
+#plot w/ new coloring
+colors <- ifelse(svm_pred == 1, "darkslategray3", "plum3")
+plot(x1, x2, pch = 16,ylim=c(-0.52,0.52), xlim=c(-0.52,0.52), col=colors, main="Colored according to SVM with nonlinear kernel")
+
+```
+
+This decision boundary is clearly nonlinear. Both the logistic regression using nonlinear functions of $X1$ and $X2$ as predictors and the SVM using a nonlinear kernel look to be an almost perfect approximation of the true decision boundary. Both the SVC and the simple logistic regression using only $X1$ and $X2$ as predictors look like poor approximations, which makes sense because each predicts a linear decision boundary, failing to effectively capture the complexity of the true quadratic decision boundary.
+
+## Exercise 9.7
+
+First, we create a binary variable that takes on a 1 for cars with gas mileage above the median, and a 0 for cars with gas mileage below the median, and replace the quantitative variable `mpg` with this new class variable.
+
+```{r 97a}
+#read in and format data
+auto <- na.omit(Auto[,-9])
+med <- median(auto$mpg)
+class <- ifelse(auto$mpg > med, 1, 0)
+auto[,1] <- as.factor(class)
+```
+
+Now, we fit a support vector classifier to the data with various values of cost, in order to predict whether a car gets high or low gas mileage. To do so, we make use of the helpful `tune()` function in the `e1071` library. By default, this function performs a 10-fold cross-validation, and we will specify seven values of the `cost` parameter for it to try.
+
+```{r 97b}
+set.seed(1)
+
+#perform 10-fold cv with specified cost values
+svc.tune <- tune(svm, mpg ~ ., data = auto, kernel = "linear", 
+    ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+summary(svc.tune)
+
+```
+
+The lowest cross-validation error is 0.087, which is achieved when we assign the `cost` parameter the value 0.1. 
+
+To get a sense of this linear fit, we plot `displacement` against `horsepower` to display the fitted model.
+
+```{r 97b1}
+par(mfrow=c(1,2))
+#plot according to class labels
+cls<-ifelse(auto$mpg == 1, "tomato", "royalblue")
+plot(auto$horsepower, auto$weight, pch = 16, col=cls, main="Colored according to class")
+
+#plot w/ new coloring
+svc97pred <- predict(svc.tune$best.model, type="response")
+colors <- ifelse(svc97pred == 1, "darkslategray3", "plum3")
+plot(auto$horsepower, auto$weight, pch = 16, col=colors, main="Colored according to SVC")
+
+```
+
+It appears that the linear kernel does well in predicting the correct class, but it is constrained by the linearity of the decision boundary it chooses; certain observations that are surrounded by observations of the other class are misclassified.
+
+Now, we do the same cross-validation using an SVM with a radial kernel, requiring us to also tune the `gamma` parameter, and an SVM with a polynomial kernel, which necessitates tuning the `degree` parameter. In each case, the additional parameter controls the complexity of the decision boundary the model prescribes, and a larger parameter value indicates greater complexity.
+
+```{r 97d}
+#radial kernel tune
+set.seed(1)
+svmr <- tune(svm, mpg ~ ., data = auto, kernel = "radial", 
+    ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100),
+    gamma=c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+summary(svmr)
+
+#poly kernel tune, plot
+set.seed(2)
+svmp <- tune(svm, mpg ~ ., data = auto, kernel = "polynomial",
+    ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100),
+    degree=seq(7)))
+summary(svmp)
+plot(svmp$best.model, auto, weight~horsepower)
+```
+
+The lowest cross-validation error for the SVM using a radial kernel is 0.066, which is achieved when `cost = 1` and `gamma = 1`. The lowest cross-validation error for the SVM using a polynomial kernel is 0.081, which is achieved when `cost = 5` and `degree = 3`. Above, the SVM using a polynomial kernel is plotted with its decision boundary.
+
+Next, we write a function to plot a Receiver Operator Characteristic (ROC) curve. This will allow us to evaluate model performance by plotting each model's true positive rate against its false positive rate. Ideally, our true positive rate would be 1, while our false positive rate would be 0. So, the best performing model is the one that maximizes the area under the curve.
+
+```{r 97d1}
+#write roc plotting function
+rocplot <- function(pred, truth, ...) {
+  predob <- prediction(pred, truth)
+  perf <- performance(predob, "tpr", "fpr")
+  plot(perf, ...)
+}
+
+```
+
+Now, we plot the ROC curve for each model on the same window, for easy comparison.
+
+```{r 97e}
+#make ROC curve plot for each model on same window
+#radial kernel
+fittedr <- attributes(
+    predict(svmr$best.model, auto, decision.values = TRUE)
+  )$decision.values
+rocplot(-fittedr, auto$mpg, main = "ROC Curves by Kernel", lwd=1.2)
+
+#linear kernel
+fitted <- attributes(
+    predict(svc.tune$best.model, auto, decision.values = TRUE)
+  )$decision.values
+rocplot(-fitted, auto$mpg, add=T, col="tomato", lwd=1.2)
+
+#poly kernel
+fittedp <- attributes(
+    predict(svmp$best.model, auto, decision.values = TRUE)
+  )$decision.values
+rocplot(-fittedp, auto$mpg, add=T, col="royalblue", lwd=1.2)
+legend(x="bottom", y="right", legend=c("Linear", "Radial", "Poly"), fill=c("tomato", "black", "royalblue"), lty=1, lwd=1)
+
+```
+
+The SVM using a radial kernel has the greatest area under its ROC curve, so it should have the greatest accuracy in predicting the training set, followed by the SVM using a polynomial kernel, then the SVC using a linear kernel. To verify this, we create a barplot indicating the accuracy of each model.
+
+```{r 97f}
+#find accuracy of each model
+acc97<-c()
+
+cml<-confusionMatrix(svc.tune$best.model$fitted, auto$mpg)
+acc97[1]<-cml$overall['Accuracy']
+
+cmr<-confusionMatrix(svmr$best.model$fitted, auto$mpg)
+acc97[2]<-cmr$overall['Accuracy']
+
+cmp<-confusionMatrix(svmp$best.model$fitted, auto$mpg)
+acc97[3]<-cmp$overall['Accuracy']
+
+#make barplot
+barplot(acc97, names.arg=c("Linear", "Radial", "Polynomial"), xlab="", ylab="Accuracy", main="Comparing Training Accuracy with each Kernel", col=c("darkgoldenrod3", "steelblue3", "tomato2"), ylim=c(0.9, 1))
+
+```
+
+As expected, the SVM using a radial kernel has the greatest accuracy in predicting the training set, with 96.4%. The SVM using a polynomial kernel also performs very well, with an accuracy of 94.9%, while the SVC using a linear kernel performs slightly worse, with an accuracy of 91.6%.
+

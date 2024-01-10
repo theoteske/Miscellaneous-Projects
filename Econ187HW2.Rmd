@@ -1,0 +1,406 @@
+---
+title: "Econ187HW2"
+output: pdf_document
+date: "2023-05-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(ISLR2)
+library(MASS)
+library(class)
+library(ggplot2)
+library(boot)
+library(caret)
+library(class)
+library(nnet)
+library(glmnet)
+library(elasticnet)
+library(pls)
+library(leaps)
+library(splines)
+library(gam)
+#rm(list=ls())
+```
+
+## Exercise 6.9 
+
+```{r 69ab}
+#read in data, wrangle a little
+college <- na.omit(College)
+nums <- c()
+for(i in seq(nrow(college))){
+  if(college$Private[i] == "Yes")
+    nums[i] <- 1
+  else
+    nums[i] <- 0
+}
+college$Private <- nums
+
+#set seed for reproducibility
+set.seed(12)
+
+#split into 75% training, 25% testing
+trainIndex <- createDataPartition(college$Apps, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+coll_train <- college[trainIndex, ]
+coll_test <- college[-trainIndex, ]
+
+#fit a linear model
+coll_lm <- lm(Apps ~ ., data=coll_train)
+
+#find and report test error
+lm_pred <- predict(coll_lm, coll_test)
+paste("RMSE for linear model using least squares: ", RMSE(lm_pred, coll_test$Apps))
+```
+
+```{r 69c}
+#fit a ridge regression model
+ridge_coll <- cv.glmnet(x=as.matrix(coll_train[,-2]), y=coll_train$Apps, alpha=0)
+
+#find optimal lambda
+plot(ridge_coll)
+paste("Optimal lambda: ", ridge_coll$lambda.min)
+
+#find and report test error
+ridge_pred <- predict(ridge_coll, newx=as.matrix(coll_test[,-2]), s="lambda.min")
+paste("RMSE for ridge: ", RMSE(ridge_pred, coll_test$Apps))
+```
+
+```{r 69d}
+#fit a lasso regression model
+lasso_coll <- cv.glmnet(x=as.matrix(coll_train[,-2]), y=coll_train$Apps, alpha=1)
+
+#find optimal lambda
+plot(lasso_coll)
+paste("Optimal lambda: ", lasso_coll$lambda.min)
+
+#find and report test error
+lasso_pred <- predict(lasso_coll, newx=as.matrix(coll_test[,-2]), s="lambda.min")
+paste("RMSE for lasso: ", RMSE(lasso_pred, coll_test$Apps))
+
+#look at the coefficients
+coef(lasso_coll, s="lambda.min")
+
+```
+
+Excluding the intercept, we have 15 nonzero coefficient estimates.
+
+```{r 69e}
+#fit principal components regression
+pcr_coll <- pcr(Apps~., data=coll_train, scale=TRUE, validation="CV")
+
+#find optimal M value
+validationplot(pcr_coll, val.type="MSEP")
+summary(pcr_coll)
+
+```
+Judging by the validation plot (which is in terms of MSE) and looking at the adjusted CV error, we have the best performance when all components are used. However, using all components is the same as simply performing least squares. So, we observe that we get almost the same performance when we use only $M=5$ components, and this is the value we will use.
+
+```{r 69ept2}
+#find and report pcr test error
+pcr_pred=predict(pcr_coll, coll_test, ncomp=5)
+paste("RMSE for PCR: ", RMSE(pcr_pred, coll_test$Apps))
+
+```
+```{r 69f}
+#fit partial least squares model 
+pls_coll <- plsr(Apps~., data=coll_train, scale=TRUE, validation="CV")
+
+#find optimal M value
+validationplot(pls_coll, val.type="MSEP")
+summary(pls_coll)
+
+```
+
+We find that the best performance occurs when we use anywhere from 12 to 17 partial least squares directions, but we get essentially the same performance using only $M=7$ directions.
+
+```{r 69fpt2}
+#find and report pls test error
+pls_pred=predict(pls_coll, coll_test, ncomp=7)
+paste("RMSE for PLS: ", RMSE(pls_pred, coll_test$Apps))
+
+```
+In conclusion, ordinary least squares performs the best with an RMSE of 1270, while partial least squares performs nearly as well using only $M=7$ components. Lasso also performs well, but ridge does not, and PCR performs the worst of all methods, which makes sense as PCR focuses first on eliminating multi-collinearity, rather than optimizing for accuracy in predicting the target variable.
+
+## Exercise 6.11
+
+```{r 611 bestsubset}
+#read in boston data
+boston <- na.omit(Boston)
+
+#set seed for reproducibility
+set.seed(1)
+
+#75% training/25% testing split
+trainIndex <- createDataPartition(boston$crim, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+bos_train <- boston[trainIndex, ]
+bos_test <- boston[-trainIndex, ]
+
+#perform best subset selection
+bos_subsets <- regsubsets(crim~., bos_train, nvmax=13)
+
+#plot based on Cp, check that it has good adjusted R^2
+plot(bos_subsets ,scale="Cp")
+plot(bos_subsets ,scale="adjr2")
+```
+
+Best subset selection based on Mallows' Cp yields a seven-variable model with the variables `zn, nox, rm, dis, rad, ptratio, medv`. This model also is tied for the best adjusted $R^2$ value of 0.41.
+
+```{r 611 bestsubsetsrmse}
+#see how it performs on testing set
+bos_lm <- lm(crim~zn+nox+rm+dis+rad+ptratio+medv, data=bos_train)
+boslm_pred <- predict(bos_lm, bos_test)
+paste("RMSE for best subset selection: ", RMSE(boslm_pred,bos_test$crim))
+
+```
+```{r 611ridge}
+#fit a ridge regression model
+ridge_bos <- cv.glmnet(x=as.matrix(bos_train[,-1]), y=bos_train$crim, alpha=0)
+
+#find optimal lambda
+plot(ridge_bos)
+paste("Optimal lambda: ", ridge_bos$lambda.min)
+
+#find and report test error
+bosridge_pred <- predict(ridge_bos, newx=as.matrix(bos_test[,-1]), s="lambda.min")
+paste("RMSE for ridge: ", RMSE(bosridge_pred, bos_test$crim))
+
+```
+
+```{r 611lasso}
+#fit a lasso regression model
+lasso_bos <- cv.glmnet(x=as.matrix(bos_train[,-1]), y=bos_train$crim, alpha=1)
+
+#find optimal lambda
+plot(lasso_bos)
+paste("Optimal lambda: ", lasso_bos$lambda.min)
+
+#find and report test error
+boslasso_pred <- predict(lasso_bos, newx=as.matrix(bos_test[,-1]), s="lambda.min")
+paste("RMSE for lasso: ", RMSE(boslasso_pred, bos_test$crim))
+
+```
+
+```{r 611pcr}
+#fit principal components regression
+pcr_bos <- pcr(crim~., data=bos_train, scale=TRUE, validation="CV")
+
+#find optimal M value
+validationplot(pcr_bos, val.type="MSEP")
+summary(pcr_bos)
+```
+
+After performing PCA, we get the best adjusted CV using all 13 components, but to differentiate this from ordinary least squares, we can use only $M=3$ components to get almost the same performance.
+
+```{r 611pcrmse}
+#find and report pcr test error
+pcr_bospred=predict(pcr_bos, bos_test, ncomp=3)
+paste("RMSE for PCR: ", RMSE(pcr_bospred, bos_test$crim))
+```
+In terms of RMSE, it seems that PCR performs poorly compared to the other methods we used, but ridge regression in fact performs the best, followed closely by lasso, then best subset selection using Mallows' Cp. So, the best model in this case does include all the features, as ridge regression retains all the coefficients (i.e., no coefficients go to zero).
+
+## Exercise 7.7
+
+```{r 77vars}
+#read in data
+wage <- na.omit(Wage)
+
+#plot marital status vs wage
+plot(wage$maritl, wage$wage, main="Marital Status vs Wage" ,xlab="", ylab="Wage in 1000s of USD", las=2)
+
+#plot jobclass vs wage
+plot(wage$jobclass, wage$wage, main="Job Class vs Wage" ,xlab="", ylab="Wage in 1000s of USD", las=2)
+
+#plot race vs wage
+plot(wage$race, wage$wage, main="Race vs Wage" ,xlab="", ylab="Wage in 1000s of USD", las=2)
+```
+
+Above, we observe the relationships between our target variable, `wage`, and marital status, job class, and race, respectively. Within our dataset, it appears that those who are married tend to make more money than their colleagues who are not. Similarly, those who work in the information sector tend to make more money than people who work in the industrial sector, and Asian people tend to make more money than black people.
+
+```{r 77fits}
+#fit a GAM model
+wage_gam <- gam(wage~s(year)+s(age)+maritl+race+jobclass, data=wage)
+plot(wage_gam, se=TRUE, col="red")
+
+#interpret the results
+summary(wage_gam)
+
+```
+
+Looking at the Anova for Parametric Effects, we find that all of the predictors we included are statistically significant at any reasonable significance level. Looking at the Anova for Nonparametric effects, we find that `age` has a significantly non-linear relationship with the response variable `wage`, but for the other quantitative variable `year`, a linear function suffices to model its relationship with the response.
+
+## Exercise 7.9
+
+```{r 79a}
+#fit cubic polynomial regression to predict nox using dis
+cub_fit <- lm(nox~poly(dis, 3), data=boston)
+coef(summary(cub_fit))
+
+#plot the fit
+dislims <- range(boston$dis)
+dis.grid <- seq(from = dislims[1], to = dislims[2])
+preds <- predict(cub_fit, newdata = list(dis = dis.grid),
+    se = TRUE)
+se.bands <- cbind(preds$fit + 2 * preds$se.fit,
+    preds$fit - 2 * preds$se.fit)
+
+plot(boston$dis, boston$nox, xlim = dislims, cex = .5, col = "darkgrey", xlab="dis", ylab="nox")
+title("Cubic Polynomial")
+lines(dis.grid, preds$fit, lwd = 2, col = "blue")
+matlines(dis.grid, se.bands, lwd = 1, col = "blue", lty = 3)
+```
+
+```{r 79b}
+#do the same for degree 1 through 10 polynomial and report RSS
+for(i in seq(10)){
+  #create the fit, set up plot
+  dum_fit <- lm(nox~poly(dis, i), data=boston)
+  dislims <- range(boston$dis)
+  dis.grid <- seq(from = dislims[1], to = dislims[2])
+  preds <- predict(dum_fit, newdata = list(dis = dis.grid),
+      se = TRUE)
+  se.bands <- cbind(preds$fit + 2 * preds$se.fit,
+      preds$fit - 2 * preds$se.fit)
+  
+  #plot the fit
+  plot(boston$dis, boston$nox, xlim = dislims, cex = .5, col = "darkgrey", xlab="dis", ylab="nox")
+  lines(dis.grid, preds$fit, lwd = 2, col = "blue")
+  matlines(dis.grid, se.bands, lwd = 1, col = "blue", lty = 3)
+
+  #report RSS
+  cat("RSS for degree", i, "polynomial: ", sum(resid(dum_fit)^2))
+}
+
+```
+
+```{r 79c}
+#use CV to determine optimal degree polynomial
+set.seed(1)
+cv.error <- c()
+for (i in seq(10)){
+  glm.fit=glm(nox~poly(dis, i),data=boston)
+  cv.error[i]=cv.glm(boston,glm.fit,K=10)$delta[1]
+}
+
+cv.error
+paste("Minimum CV error is" , min(cv.error), "for the polynomial of degree 4")
+
+```
+
+Computing regressions using polynomials of degrees 1 to 10, we find that the regression model with the lowest cross-validation error through 10 repeated model fittings was the one using the polynomial of degree 4.
+
+```{r 79d}
+#compute knot for 4 degrees of freedom (cubic spline, so one knot)
+knot <- attr(bs(boston$dis, df = 4), "knots")
+
+#use that as our knot
+bs_fit <- lm(nox ~ bs(dis, knots = c(knot)), data = boston)
+
+#plot the resulting fit
+bs_pred <- predict(bs_fit, newdata = list(dis = dis.grid), se = T)
+plot(boston$dis, boston$nox, col = "gray")
+lines(dis.grid, bs_pred$fit, lwd = 2, col="red")
+lines(dis.grid, bs_pred$fit + 2 * bs_pred$se, lty = "dashed")
+lines(dis.grid, bs_pred$fit - 2 * bs_pred$se, lty = "dashed")
+```
+
+```{r 79e}
+#try 10 different df values, plot the fits and output RSS
+for(i in seq(10)){
+  #create the fit, set up plot
+  spl_fit <- lm(nox ~ ns(dis, df = i), data = boston)
+  spl_pred <- predict(spl_fit, newdata = list(dis = dis.grid), se = T)
+  se.bandspl <- cbind(spl_pred$fit + 2 * spl_pred$se.fit, spl_pred$fit - 2 * spl_pred$se.fit)
+  
+  #plot the fit
+  plot(boston$dis, boston$nox, xlim = dislims, cex = .5, col = "darkgrey", xlab="dis", ylab="nox")
+  lines(dis.grid, spl_pred$fit, lwd = 2, col = "blue")
+  matlines(dis.grid, se.bandspl, lwd = 1, col = "blue", lty = 3)
+  
+  #report RSS
+  cat("RSS for", i, "degrees of freedom: ", sum(resid(spl_fit)^2))
+}
+
+```
+
+We note that the residual sum-of-squares decreases as the number of degrees of freedom we allow increases.
+
+```{r 79f}
+#use CV to determine optimal degrees of freedom
+set.seed(1)
+cv.errorspl <- c()
+for (i in seq(10)){
+  glm.fit=glm(nox~ns(dis, df=i),data=boston)
+  cv.errorspl[i]=cv.glm(boston,glm.fit,K=10)$delta[1]
+}
+
+cv.errorspl
+paste("Minimum CV error is", min(cv.errorspl), "for the spline with 8 degrees of freedom")
+
+```
+
+Computing regressions using splines of with degrees of freedom from 1 through 10, we find that the regression spline model with the lowest cross-validation error through 10 repeated model fittings was the one with 8 degrees of freedom.
+
+## Exercise 7.10
+
+```{r 710a}
+#read in data again to retain Private as a qualitative variable
+lege <- na.omit(College)
+
+#set seed for reproducibility
+set.seed(7)
+
+#split into 75% training, 25% testing but with out-of-state tuition as response
+trainIndex <- createDataPartition(lege$Outstate, p = .75, 
+                                  list = FALSE, 
+                                  times = 1)
+lege_train <- lege[trainIndex, ]
+lege_test <- lege[-trainIndex, ]
+
+#perform forward stepwise selection on the training set
+#define intercept-only model
+intercept_only <- lm(Outstate ~ 1, data=lege_train)
+
+#define model with all predictors
+all <- lm(Outstate ~ ., data=lege_train)
+
+#perform forward stepwise regression
+forward <- step(intercept_only, direction='forward', scope=formula(all), trace=0)
+
+#view results of forward stepwise regression
+forward$anova
+
+#view final model
+forward$coefficients
+```
+
+First, we fit the intercept-only model. This model had an AIC of 9694.50. Next, we fit every possible one-predictor model. The model that produced the lowest AIC and also had a statistically significant reduction in AIC compared to the intercept-only model used the predictor `Room.Board`. This model had an AIC of 9351.71. We continue in this fashion until we try to fit a 9-predictor model, and as none of these models produce a significant reduction in AIC, we stop.
+
+```{r 710b}
+#fit gam model using the selected predictors
+lege_gam <- gam(Outstate~s(Expend)+Private+s(Room.Board)+s(perc.alumni)+s(Grad.Rate)+s(Terminal)+s(PhD)+s(Personal), data=lege_train)
+
+#plot the fit
+plot(lege_gam, se = TRUE, col = "blue")
+```
+
+We fit a GAM using the selected predictors, but we don't use a spline for the predictor `Private` as it is a qualitative variable. Looking at the plots, each variable's function looks essentially linear except for `Expend`, and possibly `Grad.Rate`.
+
+```{r 710c}
+#evaluate the model on the test set
+lege_gampred <- predict(lege_gam, newdata = lege_test)
+paste("RMSE for GAM fit: ", sqrt(mean((lege_test$Outstate - lege_gampred)^2)))
+```
+We find that, on average, the values for `Outstate` predicted by our GAM model differ from the observed values in our test set by 1804.96.
+
+```{r 710d}
+#look at anova for nonparametric effects
+summary(lege_gam)
+```
+
+The p-values in the Anova for Nonparametric Effects for each predictor correspond to a null hypothesis of a linear relationship versus the alternative of a non-linear relationship. So, the very small p-value for `Expend` confirms our suspicion that it has a non-linear relationship with the response, `Outstate`. Also, `Grad.Rate` has a significantly non-linear relationship with the response at the $\alpha=0.05$ significance level. However, the larger p-values for all the other predictors suggest that a linear function is adequate for those terms at the $\alpha=0.05$ level of significance.
