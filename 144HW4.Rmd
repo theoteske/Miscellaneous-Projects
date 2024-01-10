@@ -1,0 +1,429 @@
+---
+title: "144HW4"
+author: "Theo Teske"
+date: "2023-02-28"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(devtools)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+library(car)
+library(AER)
+library(broom)
+library(leaps)
+library(forecast)
+library(tseries)
+library(seasonal)
+library(fable)
+library(stats)
+library(qcc)
+library(vars)
+library(fpp2)
+library(urca)
+```
+
+## Problem 1
+
+```{r p1}
+gold <- read.table("C:/Users/Theo/Downloads/fmhpi_master_file.csv", header=TRUE,
+   sep=",")
+
+#Choose the non-seasonally adjusted data for Athens, GA and Atlanta, GA
+ath <- ts(gold$Index_NSA[11521:12096], start = 1975, freq=12)
+atl <- ts(gold$Index_NSA[12097:12672], start=1975, freq=12)
+
+#Create time series for price growth
+ath_gr <- 100*diff(log(ath))
+atl_gr <- 100*diff(log(atl))
+
+#Choose optimal lag structure
+x <- data.frame(ath_gr, atl_gr)
+VARselect(x, type= "const", lag.max = 8)
+
+```
+We see that AIC and FPE (Final Prediction Error) both suggest 8 lags, while BIC and Hannan-Quinn both suggest 7 lags. In the interest of parsimony, we fit a VAR model with 7 lags.
+
+## Problem 2
+
+```{r p2}
+#Create VAR(7) model
+var_est <- VAR(x, p=7, type="both")
+
+#Perform Granger tests
+grangertest(ath_gr~atl_gr, order=7, data=x)
+grangertest(atl_gr~ath_gr, order=7, data=x)
+
+```
+
+With a p-value of 0.2002, we fail to reject the null hypothesis for the first test at the $\alpha = 0.05$ significance level, so we don't have evidence that atl_gr is predictive of ath_gr. However, the p-value of the second test is 0.0004471, so at the $\alpha = 0.05$ significance level, we reject the null hypothesis, allowing us to conclude that ath_gr has predictive ability for atl_gr.
+
+## Problem 3
+
+```{r p3}
+#plot IRFs
+pl1 <- irf(var_est, impulse = "ath_gr", response = "atl_gr",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+pl2 <- irf(var_est, impulse = "ath_gr", response = "ath_gr",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+pl3 <- irf(var_est, impulse = "atl_gr", response = "atl_gr",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+pl4 <- irf(var_est, impulse = "atl_gr", response = "ath_gr",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+
+plot(pl1)
+plot(pl2)
+plot(pl3)
+plot(pl4)
+
+```
+
+Each graph has 95% confidence bands around the value of the response so we can consider the statistical significance of the response. Interestingly, a shocks in Atlanta fails to have any nonzero effect on the market in Athens over time, as the bands always include zero, and we see only a small initial response in the Athens market from a shock in Athens. However, a shock in Athens and a shock in Atlanta both result in responses in the market in Atlanta that last for 12 months at least. This is interesting, because Atlanta is a bigger city and would be expected to have the more influential market, but this doesn't appear to be the case.
+
+Because a shock in the Atlanta market has no contemporaneous effect in Athens, but a shock in the Athens market contemporaneously impacts both the Atlanta and Athens markets, we should choose the ordering (ath_gr, atl_gr).
+
+## Problem 4
+
+```{r p4a}
+#reading in data
+retaildata <- readxl::read_excel("C:/Users/Theo/Downloads/retail.xlsx", skip=1)
+
+myts <- ts(retaildata[,"A3349556W"], frequency=12, start=c(1982,4))
+plot(myts)
+```
+
+Looking at the plot of the time series, we see that the volatility of the series increases over time, suggesting that a multiplicative decomposition is needed to capture this changing variance.
+
+```{r p4bc}
+#perform two hw decomps, one damped
+decomp <- hw(myts,seasonal="multiplicative")
+decomp_damped <- hw(myts,seasonal="multiplicative", damped=TRUE)
+
+#compare RMSE of one-step forecasts
+rmse_nodamp <- sqrt(mean((myts - decomp$model$fitted)^2))
+print(paste("RMSE No Damping: ", rmse_nodamp))
+rmse_damp <- sqrt(mean((myts - decomp_damped$model$fitted)^2))
+print(paste("RMSE Trend Damped: ", rmse_damp))
+```
+
+The RMSE of the one-step forecast from the Holt-Winters' method with the trend damped is lower than the RMSE of the standard Holt-Winters' method, so the method with the trend damped is preferred.
+
+```{r p4d}
+plot(decomp_damped$model$fitted, decomp_damped$model$residuals, main="Residuals vs fitted values plot for gold", xlab="Fitted Value", ylab = "Residual")
+abline(0,0)
+
+acf(coredata(decomp_damped$model$residuals))
+pacf(coredata(decomp_damped$model$residuals))
+
+```
+
+The residuals do look largely like white noise, but the ACF and the PACF indicate an autocorrelation every 12 months.
+
+```{r p4e}
+#split data into training and testing
+myts.train <- window(myts, end=c(2010,12))
+myts.test <- window(myts, start=2011)
+
+#train models
+fc1 <- snaive(myts.train, h = 36)
+fc2 <- hw(myts.train, seasonal="multiplicative", damped=TRUE, h=36)
+
+#compare RMSE
+rmse_sn <- sqrt(mean((myts.test - fc1$mean)^2))
+rmse_hw <- sqrt(mean((myts.test - fc2$mean)^2))
+
+print(paste("RMSE Holt-Winters: ", rmse_hw))
+print(paste("RMSE Seasonal Naive: ", rmse_sn))
+
+```
+
+The test set RMSE using Holt-Winters' method with damping is 34.28, which is higher than the RMSE using the seasonal naive forecast of 29.119. Thus, the Holt-Winters' model does not beat the seasonal naive approach.
+
+## Problem 5
+
+```{r p5}
+#perform Box-Cox transformation, make new train/test
+myts_bc <- BoxCox(myts, lambda = "auto")
+myts_bc.train <- window(myts_bc, end=c(2010,12))
+myts_bc.test <- window(myts_bc, start=2011)
+
+#STL decomposition
+myts_stl <- stl(myts_bc.train[,1], s.window="periodic")
+stl_ets <- ets(myts_stl$time.series[,3])
+
+#find rmse of forecast
+
+fc3 <- forecast::forecast(stl_ets, h=36)
+rmse_stl <-  sqrt(mean((myts_bc.test - fc3$mean)^2))
+print(paste("RMSE STL with ETS: ", rmse_stl))
+
+```
+
+The test set RMSE of this model is extremely small, only 2.73, so it is much smaller than the RMSE from the other forecasts.
+
+## Problem 6
+
+```{r p6a}
+data <- visitors
+plot(data)
+
+```
+
+We observe an increasing trend and clear seasonality. It appears that the volatility of the series increases over time. Therefore, the time series is not stationary. There aren't any obvious cycles visible.
+
+```{r p6b}
+#split data into training and testing
+data.train <- window(data, end=c(2003,4))
+data.test <- window(data, start=c(2003,5))
+
+#create hw forecast
+fc_hw <- hw(data.train, seasonal="multiplicative", h=24)
+fc_hw
+
+```
+
+Multiplicative seasonality is necessary here because when looking at the plot of our time series, we noticed that the volatility increases over time.
+
+```{r p6c}
+#standard ets forecast
+ets1 <- ets(data.train)
+fc_ets1 <- forecast::forecast(ets1, h=24)
+rmse_ets1 <- sqrt(mean((data.test - fc_ets1$mean)^2))
+print(paste("RMSE Standard ETS: ", rmse_ets1))
+
+#additive ets applied to box-cox
+data_bc <- BoxCox(data, lambda = "auto")
+data_bc.train <- window(data_bc, end=c(2003,4))
+data_bc.test <- window(data_bc, start=c(2003,5))
+
+ets2 <- ets(data_bc.train, additive.only=TRUE)
+fc_ets2 <- forecast::forecast(ets2, h=24)
+rmse_ets2 <- sqrt(mean((data_bc.test - fc_ets2$mean)^2))
+print(paste("RMSE Additive ETS with Box-Cox: ", rmse_ets2))
+
+#seasonal naive
+fc_sn <- snaive(data.train, h=24)
+rmse_snn <- sqrt(mean((data.test - fc_sn$mean)^2))
+print(paste("RMSE Seasonal Naive: ", rmse_snn))
+
+#STL to box cox then ETS on seasonally adjusted data
+data_stl <- stl(data_bc.train, s.window="periodic")
+spec_ets <- ets(data_stl$time.series[,3])
+fc_stl <- forecast::forecast(spec_ets, h=24)
+rmse_stlets <- sqrt(mean((data_bc.test - fc_stl$mean)^2))
+print(paste("RMSE STL then ETS with Box-Cox: ", rmse_stlets))
+
+```
+
+The forecast with the lowest RMSE is the one generated by the additive ETS model applied to the Box-Cox transformed data.
+
+```{r residtests}
+checkresiduals(ets2)
+
+```
+
+The additive ETS model fails the Ljung-Box test as it returns a p-value of 0.0018, which is very small and forces us to reject the null hypothesis that no autocorrelations are present. The presence of autocorrelations is confirmed by the ACF.
+
+```{r crossvalid}
+f1 <- function(y, h) {forecast::forecast(ets1, h=24)}
+e1 <- tsCV(data, f1, h=1)
+print(paste("RMSE Standard ETS: ", sqrt(mean(e1^2, na.rm=TRUE))))
+
+f2 <- function(y, h) {forecast::forecast(ets2, h=24)}
+e2 <- tsCV(data_bc, f2, h=1)
+print(paste("RMSE Additive ETS with Box-Cox: ", sqrt(mean(e2^2, na.rm=TRUE))))
+
+f3 <- function(y, h) {forecast::forecast(fc_sn, h=24)}
+e3 <- tsCV(data, f3, h=1)
+print(paste("RMSE Seasonal Naive: ", sqrt(mean(e3^2, na.rm=TRUE))))
+
+f4 <- function(y, h) {forecast::forecast(spec_ets, h=24)}
+e4 <- tsCV(data, f4, h=1)
+print(paste("RMSE STL then ETS with Box-Cox: ", sqrt(mean(e4^2, na.rm=TRUE))))
+
+```
+
+After time-series cross-validation, we do come to the same conclusion as we did using a training and test set: again, the additive ETS model applied to the Box-Cox transformed data performs the best.
+
+## Problem 7
+
+```{r p7a}
+aus <- auscafe
+plot(aus)
+```
+
+The data appear to have increasing variance over time, so the data do need to be transformed by taking a log to stabilize the variance.
+
+```{r p7b}
+acf(log(aus))
+pacf(log(aus))
+
+```
+
+The ACF and the PACF show that there are several autocorrelations, so the data are not stationary. As we observe clear evidence of seasonality in the plot of the time series above, we seasonally difference the data.
+
+```{r p7bb}
+plot(diff(log(aus),12))
+acf(diff(log(aus),12))
+pacf(diff(log(aus),12))
+```
+
+After seasonal differencing, we still observe a pattern of autocorrelations in the ACF. So, we take a first difference of the data as well.
+
+```{r p7bb extra}
+aus_d <- diff(diff(log(aus),12))
+acf(coredata(aus_d))
+pacf(coredata(aus_d))
+
+test <- ur.kpss(aus_d)
+summary(test)
+```
+
+After performing a KPSS test, we get a very small test-statistic value, so we can conclude that the data are stationary. This is supported by the ACF and PACF plots, which both show very few serial correlations.
+
+In the PACF, we see exponentially decaying spikes every 12th and every (12k+1)th lag, while in the ACF we see a spike at 1 lag, a spike at 12 lags, and a smaller spike at 24 lags. This suggests a seasonal MA(1) component and a non-seasonal MA(1) component would be most appropriate, although a non-seasonal AR(1) component might also be appropriate. So, we can try an ARIMA(0,1,1)(0,1,1) model and an ARIMA(1,1,1)(0,1,1) model.
+
+```{r p7c}
+ar1 <- Arima(aus_d, order=c(0,1,1), seasonal=c(0,1,1))
+ar2 <- Arima(aus_d, order=c(1,1,1), seasonal=c(0,1,1))
+
+paste("ARIMA(0,1,1)(0,1,1) model AIC: ", ar1$aic)
+paste("ARIMA(1,1,1)(0,1,1) model AIC: ", ar2$aic)
+```
+
+According to the AIC values, the ARIMA(1,1,1)(0,1,1) model is best.
+
+```{r p7d}
+checkresiduals(ar2)
+```
+
+The residuals do not resemble white noise looking at the ACF as multiple autocorrelations are beyond the threshhold, and the Ljung-Box test yields a very small p-value, so we reject the null hypothesis and conclude that autocorrelation is present. Thus, we find another model.
+
+```{r p7d extra}
+ar3 <- auto.arima(aus_d)
+summary(ar3)
+
+checkresiduals(ar3)
+```
+
+Using auto.arima(), we generate an ARIMA(3,0,0)(2,0,1) model which has an AIC of -1899.13, which is lower than the AIC values for the other models considered earlier. The ACF still has some serial correlations, but it has fewer than the previous model, and it yields a larger p-value from the Ljung-Box test than the previous model did.
+
+```{r p7e}
+pred_ar <- predict(ar3, n.ahead=24)
+fit<-ets(aus_d)
+pred_ets <- forecast::forecast(fit, h=24)
+
+plot(aus_d)
+lines(pred_ar$pred, col="red")
+lines(pred_ets$mean, col="blue")
+
+```
+
+Above in black is a plot of the transformed and differenced time series. The forecast obtained from the ARIMA model can be seen on the plot above in red; the forecast obtained from the ETS model is in blue.
+
+## Problem 8
+
+```{r p8a}
+library(Quandl)
+y <- Quandl("NSE/OIL",type="ts",collapse="monthly")
+oil <- y[,1]
+plot(oil)
+```
+
+Clearly, we need to perform differencing to make the data stationary. We observe some seasonality, but it doesn't appear to change over time. Also, we observe a downward trend. So, we take a seasonal difference and a first difference of the data.
+
+```{r p8b}
+oil_d <- diff(diff(oil, 12))
+plot(oil_d)
+acf(coredata(oil_d))
+pacf(coredata(oil_d))
+```
+
+Now, our data appear to be largely stationary. We see a clear spike in the PACF, so an MA(1) component is likely useful. The ACF and the PACF both show a spike at a lag of 12, and the PACF shows a spike at a lag of 17, suggesting that a seasonal AR(2) component or a seasonal MA(1) component could be appropriate.  So, we fit an ARIMA(0,1,1)(2,1,1) model.
+
+```{r p8c}
+oil_ar <- Arima(oil_d, order=c(0,1,1), seasonal=c(2,1,1))
+summary(oil_ar)
+checkresiduals(oil_ar)
+acf(oil_ar$residuals)
+```
+
+The Ljung-Box test gives a large p-value of 0.7441, so we fail to reject the null hypothesis; this indicates that autocorrelations are not present. Furthermore, the ACF shows no autocorrelations beyond the threshhold, and the residuals look approximately normally distributed. We conclude that the residuals are white noise.
+
+```{r p8d}
+cast_ar <- forecast::forecast(oil_ar, h=48)
+cast_ar
+plot(cast_ar)
+```
+
+To identify an appropriate ETS model, we let the `ets()` function select the model by minimizing the AICc. It appears that an appropriate model would be ETS(A,N,N), as our time series has no trend or seasonality left over after differencing, and the errors should be additive as the variance doesn't change over time.
+
+```{r p8e}
+oil_ets <- ets(oil_d)
+summary(oil_ets)
+
+```
+As expected, the `ets()` function selected an ETS(A,N,N) model. 
+
+```{r p8f}
+checkresiduals(oil_ets)
+
+```
+
+The ACF shows a clear spike at a lag of 12, so the residuals are not white noise. This is backed up by the Ljung-Box test returning a p-value of 0.0016, which is very small, so we would reject the null hypothesis that no autocorrelations are present and conclude that autocorrelations are indeed present.
+
+```{r p8g}
+cast_ets <- forecast::forecast(oil_ets, h=48)
+plot(cast_ets)
+```
+
+I prefer the ARIMA forecast as the residuals of the ARIMA fit resembled white noise, while the residuals of the ETS fit did not.
+
+## Problem 9
+
+```{r readindata}
+y <- Quandl("WIKI/AMZN",type="ts",collapse="monthly")
+amzn <- y[,1]
+plot(amzn)
+
+```
+
+We will train the models on data from 1997 to 2016.
+
+```{r work}
+train <- window(amzn, end=c(2015,12))
+h <- length(amzn) - length(train)
+ETS <- forecast::forecast(ets(train), h=h)
+ARIMA <- forecast::forecast(auto.arima(train, lambda=0, biasadj=TRUE),
+  h=h)
+STL <- stlf(train, lambda=0, h=h, biasadj=TRUE)
+NNAR <- forecast::forecast(nnetar(train), h=h)
+TBATS <- forecast::forecast(tbats(train, biasadj=TRUE), h=h)
+Combination <- (ETS[["mean"]] + ARIMA[["mean"]] +
+  STL[["mean"]] + NNAR[["mean"]] + TBATS[["mean"]])/5
+
+autoplot(amzn) +
+  autolayer(ETS, series="ETS", PI=FALSE) +
+  autolayer(ARIMA, series="ARIMA", PI=FALSE) +
+  autolayer(STL, series="STL", PI=FALSE) +
+  autolayer(NNAR, series="NNAR", PI=FALSE) +
+  autolayer(TBATS, series="TBATS", PI=FALSE) +
+  autolayer(Combination, series="Combination") +
+  xlab("Year") + ylab("$ thousands") +
+  ggtitle("Amazon performance by month")
+
+c(ETS = forecast::accuracy(ETS, amzn)["Test set","RMSE"],
+  ARIMA = forecast::accuracy(ARIMA, amzn)["Test set","RMSE"],
+  `STL-ETS` = forecast::accuracy(STL, amzn)["Test set","RMSE"],
+  NNAR = forecast::accuracy(NNAR, amzn)["Test set","RMSE"],
+  TBATS = forecast::accuracy(TBATS, amzn)["Test set","RMSE"],
+  Combination =
+    forecast::accuracy(Combination, amzn)["Test set","RMSE"])
+
+```
+
+Perhaps surprisingly, the STL-ETS model performed the best by a relatively large margin. Every other forecast predicted that the time series' growth would taper off, but it actually grew at an even greater rate. In general, one would expect the combination to perform the best. That being said, this method of combination is very rudimentary as it doesn't even weight the different forecasts differently, so it's understandable that the combination was not the most accurate.

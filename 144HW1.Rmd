@@ -1,0 +1,221 @@
+---
+title: "144HW1"
+author: "Theo Teske"
+date: '2023-01-20'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(xts)
+library(zoo)
+library(ggplot2)
+library(tsbox)
+library(e1071)
+
+options(warn=-1)
+
+```
+
+## Problem 1
+
+Note: data for RPCE was only available from January 2002 onwards.
+
+```{r problem1a}
+
+rpce <- read.table("C:/Users/Theo/Downloads/PCEC96.csv", header=TRUE,
+   sep=",")
+rdpe <- read.table("C:/Users/Theo/Downloads/DSPIC96.csv", header=TRUE,
+   sep=",")
+
+rpce$date<-as.Date(rpce$DATE)
+rpce_ts <- xts(rpce$PCEC96, rpce$date)
+
+rpce_gr <- 100*(diff(log(rpce_ts)))
+
+ts_plot(rpce_gr, title = "RPCE Growth Rate over Time", ylab="Percent")
+
+rdpe$date<-as.Date(rdpe$DATE)
+rdpe_ts <- xts(rdpe$DSPIC96, rdpe$date)
+
+rdpe_gr <- 100*(diff(log(rdpe_ts)))
+ts_plot(rdpe_gr, title = "RDPI Growth Rate over Time", ylab="Percent")
+
+```
+
+We see that the volatility of the consumption growth rate is lower than the volatility of the disposable income growth rate. This can likely be explained by the permanent income hypothesis, which states that people spend at the level of their long-term expected income, rather than at the level of their current income. So, big changes in disposable income translate to smaller changes in consumption.
+
+Next, we regress consumption growth on disposable income growth:
+
+```{r problem1b}
+rdpe_gr0 <- rdpe_gr["2002/20221-11"]
+
+m0 <- lm(rpce_gr ~ rdpe_gr0)
+summary(m0)
+
+```
+
+This gives us the following equation: 
+
+$$ GRPCE_t = 0.19679-0.07071 * GRDPI_t + e_t$$
+This seems to imply that a 1% increase in the growth rate of RDPI actually leads to a 7% decrease in the growth rate of RPCE, which certainly supports the permanent income hypothesis (probably a little too well). The adjusted R-squared is 0.01347, which implies that around 1.3% of the total sample variation in the growth of RPCE is explained by the growth of RDPI.
+
+Next, we add a lag of 6 months of growth in disposable income to our regression:
+
+```{r problem1c}
+m1 <- lm(rpce_gr ~ rdpe_gr0 + lag(rdpe_gr0, -6))
+summary(m1)
+```
+
+Our new equation is 
+
+$$ GRPCE_t = 0.19262-0.07137 * GRDPI_t + 0.01813* GRDPI_{t-6} + e_t$$
+
+This seems to support the permanent income hypothesis as well, because it suggests that there is an adjustment lag in consumption growth. Specifically, the model suggests that a 1% increase in income growth 6 months before corresponds with a 1.8% increase in current consumption growth.
+
+## Problem 2
+
+```{r problem2a}
+
+rgdp <- read.table("C:/Users/Theo/Downloads/GDPC1.csv", header=TRUE,
+   sep=",")
+rgdp$date<-as.Date(rgdp$DATE)
+rgdp_ts <- xts(rgdp$GDPC1, rgdp$date)
+
+ts_plot(rgdp_ts, title = "Real US GDP over Time", ylab="GDP in billions of chained 2012 dollars")
+
+```
+
+Definition: Real gross domestic product is the inflation adjusted value of the goods and services produced by labor and property located in the United States.
+Periodicity: Quarterly frequency, 1947-01-01 to 2022-11-01
+Units: Billions of chained 2012 US dollars
+Stationarity: GDP exhibits a clear upward trend with occasional dips and peaks due to recessions or booms. The stochastic process is not first order stationary.
+
+```{r problem2b}
+
+yendol <- read.table("C:/Users/Theo/Downloads/DEXJPUS.csv", header=TRUE,
+   sep=",")
+yendol$date<-as.Date(yendol$DATE)
+yendol$num <- as.numeric(yendol$DEXJPUS)
+yendol_ts <- xts(yendol$num, yendol$date)
+
+ts_plot(yendol_ts, title = "Japanese Yen to US Dollar Spot Exchange Rate", ylab="Japanse Yen to One US Dollar")
+
+```
+
+Definition: Noon buying rates in New York City for cable transfers payable in Japanese Yen.
+Periodicity: Daily frequency, 2018-01-16 to 2023-01-13
+Units: Japanese Yen to One US Dollar
+Stationarity: There is a definite slight upward trend, especially in the more recent data, so the underlying stochastic process is not first order stationary.
+
+```{r problem2c}
+
+tr <- read.table("C:/Users/Theo/Downloads/T10Y2Y.csv", header=TRUE,
+   sep=",")
+tr$date<-as.Date(tr$DATE)
+tr$num <- as.numeric(tr$T10Y2Y)
+tr_ts <- xts(tr$num, tr$date)
+
+ts_plot(tr_ts, title = "10-Year Treasury Constant Maturity Minus 2-Year Treasury Constant Maturity", ylab="Percent")
+
+```
+
+The best I could find is 10-Year Treasury Constant Maturity Minus 2-Year Treasury Constant Maturity.
+
+Definition: Series is calculated as the spread between 10-Year Treasury Constant Maturity (BC_10YEAR), which is a 10-year yield estimated from the average yields of a variety of Treasury securities with different maturities derived from the Treasury yield curve, and 2-Year Treasury Constant Maturity (BC_2YEAR).
+Periodicity: Daily frequency, 2018-01-20 to 2023-01-20
+Units: Percent
+Stationarity: There is an downward trend in the beginning, then an upward swing, followed by a sharply downward trend at the end. We don't really have enough information to judge stationarity.
+
+```{r problem2d}
+
+unra <- read.table("C:/Users/Theo/Downloads/UNRATE.csv", header=TRUE,
+   sep=",")
+unra$date<-as.Date(unra$DATE)
+unra$num <- as.numeric(unra$UNRATE)
+unra_ts <- xts(unra$num, unra$date)
+
+ts_plot(unra_ts, title = "US Unemployment Rate over Time", ylab="Percent")
+
+```
+
+Definition: The unemployment rate represents the number of unemployed as a percentage of the labor force. Labor force data are restricted to people 16 years of age and older, who currently reside in 1 of the 50 states or the District of Columbia, who do not reside in institutions (e.g., penal and mental facilities, homes for the aged), and who are not on active duty in the Armed Forces.
+Periodicity: Monthly frequency, 1948-01-01 to 2022-12-01
+Units: Percent
+Stationarity: This series does seem to have more centrality than the others as there is no clear upward or downward trend, but it also has frequent and pretty regular peaks and dips. It seems like the stationarity is unclear without more information.
+
+## Problem 3
+
+```{r problem 3a}
+col1 <- c("2001-01-01", "2001-04-01", "2001-07-01", "2001-10-01", "2002-01-01", "2002-04-01", "2002-07-01", "2002-10-01", "2003-01-01", "2003-04-01", "2003-07-01", "2003-10-01", "2004-01-01", "2004-04-01", "2004-07-01", "2004-10-01")
+col2 <- c(10021.5, 10128.9, 10135.1, 10226.3, 10338.2, 10445.7, 10546.5, 10617.5, 10744.6, 10884.0, 11116.7, 11270.9, 11472.6, 11657.5, 11814.9, 11994.8)
+
+gdp <- data.frame(col1, col2)
+
+gdp$date<-as.Date(gdp$col1)
+gdp$num <- as.numeric(gdp$col2)
+gdp_ts <- xts(gdp$num, gdp$date)
+
+ts_plot(gdp_ts, title = "GDP over Time", ylab="GDP in billions of US dollars")
+
+```
+
+The underlying stochastic process cannot be weakly stationary because the plot shows such a pronounced upward trend, so it has different means in different times.
+
+The growth rate of GDP is below:
+
+```{r growte}
+
+gdpgr <- 100*(gdp_ts - lag(gdp_ts, 1))/lag(gdp_ts, 1)
+print(gdpgr)
+
+gdpln <- log(gdp_ts)
+
+ts_plot(gdpln, title="Natural Log of GDP", ylab="Natural Log of GDP in Billions of US Dollars")
+
+```
+
+Looking at the plot for the natural log of GDP, we see that the clear upward trend is the same, but this plot is smoother than our initial plot for GDP. It still is not stationary because of the clear trend.
+
+Below are the first log-differences:
+
+```{r growthate}
+
+gdpgr2 <- 100*(gdpln - lag(gdpln, 1))/lag(gdpln, 1)
+print(gdpgr2)
+
+gdpln <- log(gdp_ts)
+
+```
+
+There are not significant differences between the growth rate of nominal GDP and the first log-differences.
+
+## Problem 4
+
+I could only get data from January 22, 2013 onwards.
+
+```{r 4a}
+
+sp <- read.table("C:/Users/Theo/Downloads/SP500.csv", header=TRUE,
+   sep=",")
+
+sp$date<-as.Date(sp$DATE)
+sp$num<-as.numeric(sp$SP500)
+sp_ts <- xts(sp$num, sp$date)
+
+spr1 <- 100*diff(log(sp_ts))
+
+spr_a <- lag(spr1, 1)
+plot(coredata(spr1), coredata(spr_a), main="Rt vs Rt-1", xlab="Rt", ylab="Rt-1")
+
+spr_b <- lag(spr1, 2)
+plot(coredata(spr1), coredata(spr_b), main="Rt vs Rt-2", xlab="Rt", ylab="Rt-2")
+
+spr_c <- lag(spr1, 3)
+plot(coredata(spr1), coredata(spr_c), main="Rt vs Rt-3", xlab="Rt", ylab="Rt-3")
+
+spr_d <- lag(spr1, 4)
+plot(coredata(spr1), coredata(spr_d), main="Rt vs Rt-4", xlab="Rt", ylab="Rt-4")
+
+```
+We don't see any kind of linear trend between the current returns and the returns of any of the past 4 days. Each graph exhibits no clear pattern.

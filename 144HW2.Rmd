@@ -1,0 +1,260 @@
+---
+title: "144 Homework 2"
+author: "Theo Teske"
+date: "2023-02-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls(all=TRUE))
+library(ggplot2)
+library(AER)
+library(car)
+library(tseries)
+library(forecast)
+require(stats)
+library(fpp3)
+library(tseries)
+library(seasonal)
+library(fable)
+library(stats)
+library(fpp2)
+library(readr)
+library(TTR)
+library(dplyr)
+library(reshape2)
+
+
+```
+
+## Problem 4.3
+
+Note: I couldn't find quarterly data so I used the annual data provided along with the textbook instead.
+
+```{r 4.3}
+
+dat <- read.table("C:/Users/Theo/Downloads/Table4_1_houseprices_mortgagerates.csv", header=TRUE,
+   sep=",")
+
+pr <- as.numeric(dat$US.House.Price.Index..Freddie.Mac.)
+rat <- as.numeric(dat$X30.year.fixed.mortgage.rate..average.)
+
+pr_ts <- ts(pr, start=1971, freq=1)
+pr_gr <- diff(pr_ts, lag = 1)
+rat_ts <- ts(rat,start=1971, freq=1)
+rat_gr <- diff(rat_ts, lag = 1)
+
+acf(coredata(pr_ts), main="ACF of Price Index")
+pacf(coredata(pr_ts), main="PACF of Price Index")
+
+acf(coredata(rat_ts), main="ACF of Mortgage Rate Average")
+pacf(coredata(rat_ts), main="PACF of Mortgage Rate Average")
+
+
+acf(coredata(pr_gr), main="ACF of Price Index Growth")
+pacf(coredata(pr_gr), main="PACF of Price Index Growth")
+
+acf(coredata(rat_gr), main="ACF of Mortgage Rate Average Growth")
+pacf(coredata(rat_gr), main="PACF of Mortgage Rate Average Growth")
+```
+
+There is stronger time dependence in the series for Price Index and mortgage Rate Average than in the series for Price Index Growth and Mortgage Rate Average growth. There is also some more autocorrelation between lags in the Price Index series than in the Mortgage Rate Average series.
+
+## Problem 4.4
+
+```{r 4.4}
+reg_1 <- lm(pr_gr ~ stats::lag(pr_gr, 1))
+reg_2 <- lm(pr_gr ~ stats::lag(pr_gr, 1)+stats::lag(pr_gr, 2))
+reg_3 <- lm(pr_gr ~ stats::lag(pr_gr, 1)+stats::lag(pr_gr, 2)+stats::lag(pr_gr, 3))
+reg_4 <- lm(pr_gr ~ stats::lag(pr_gr, 1)+stats::lag(pr_gr, 2)+stats::lag(pr_gr, 3)+stats::lag(pr_gr, 4))
+
+summary(reg_1)
+summary(reg_2)
+summary(reg_3)
+summary(reg_4)
+
+```
+
+The regression results show that each model is highly predictive of the Price Index Growth, but the extra lags after the first one don't really help.
+
+## Problem 4.8
+
+```{r 4.8}
+dats <- read.table("C:/Users/Theo/Downloads/P4_8.csv", header=TRUE,
+   sep=",")
+
+act <- as.numeric(dats$Actual.RGDP.Quarterly.Growth..in...)
+gre <- as.numeric(dats$Greenbook.RGDP.Quarterly.Growth.Forecast..in...)
+
+act_ts <- ts(act, start=1969, freq=4)
+gre_ts <- ts(gre,start=1969, freq=4)
+
+err_ts <- act_ts-gre_ts
+
+reg_err <- lm(err_ts~stats::lag(err_ts,1) + stats::lag(err_ts,2) + stats::lag(err_ts,3) + stats::lag(err_ts,4))
+
+summary(reg_err)
+
+```
+The regression model has an essentially perfect fit, our F-statistic is on the order of e^33. So, the forecast error is very much predictable from its past
+
+## Problem 6.2
+
+```{r 6.2}
+glimpse(plastics)
+
+#use 2000 as placeholder starting year
+pl_ts <- ts(plastics, start = 2000, freq=12)
+
+plot(pl_ts)
+
+```
+It looks like there is clear seasonality, as every year we see a spike in summer, and an upward trend, with no real cycles.
+
+```{r mult decomp}
+# Perform multiplicative decomposition then plot it
+dcmp_m <- decompose(pl_ts, "multiplicative")
+
+# Store the inidividual components
+trend_m = dcmp_m$trend
+seasonal_m = dcmp_m$seasonal
+random_m = dcmp_m$random
+
+# Seasonally adjust the data
+detrend_seas_adj_m = pl_ts/seasonal_m
+plot(detrend_seas_adj_m, main="Plot of Seasonally Adjusted Data")
+
+```
+Our interpretation from part (a) is supported, it looks like there is a clear upward trend without any real cycles except for at the end where it rises then dips.
+
+```{r outlier}
+#change one observation near end
+x <- pl_ts[59]
+pl_ts[59] <- 500
+# Perform multiplicative decomposition then plot it
+dcmp_m <- decompose(pl_ts, "multiplicative")
+
+# Store the inidividual components
+trend_m = dcmp_m$trend
+seasonal_m = dcmp_m$seasonal
+random_m = dcmp_m$random
+
+# Seasonally adjust the data
+detrend_seas_adj_m = pl_ts/seasonal_m
+plot(detrend_seas_adj_m, main="Plot of Seasonally Adjusted Data with Outlier near End")
+
+
+#change one observation near middle
+pl_ts[59] <- x
+pl_ts[30] <- 500
+# Perform multiplicative decomposition then plot it
+dcmp_m <- decompose(pl_ts, "multiplicative")
+
+# Store the inidividual components
+trend_m = dcmp_m$trend
+seasonal_m = dcmp_m$seasonal
+random_m = dcmp_m$random
+
+# Seasonally adjust the data
+detrend_seas_adj_m = pl_ts/seasonal_m
+plot(detrend_seas_adj_m, main="Plot of Seasonally Adjusted Data with Outlier in Middle")
+
+```
+It does make a difference, the two plots look significantly different, the one with the outlier near the end is much more "smooth" than the one that has the outlier in the middle (disregarding close to the outlier)
+
+
+## Problem 6.6
+
+```{r stl}
+
+rm(list = ls(all = TRUE))
+
+df <- bricksq
+df_ts <- ts(df, start=1956, freq=4)
+
+stl_df = stl(bricksq, "periodic")
+autoplot(stl_df)
+seasonal_stl_df = stl_df$time.series[,1]
+trend_stl_df = stl_df$time.series[,2]
+random_stl_df = stl_df$time.series[,3]
+
+#seasonally adjusted
+
+seas_adj <- df_ts - seasonal_stl_df
+autoplot(seas_adj, main="Seasonally Adjusted Data", ylab="")
+
+# naive forecast
+naive <- naive(seas_adj)
+
+# stlf, plot residuals
+cast <- stlf(seas_adj, method='naive')
+resid <- cast$model$residuals[-1]
+plot(resid, main = 'Residuals of First STL', ylab = "")
+abline(0,0)
+
+```
+The residuals look fairly normally distributed, with perhaps a few outliers around the middle of the plot with very negative values.
+
+```{r robust stl}
+cast0 <- stlf(seas_adj, method='naive', robust=TRUE)
+resid0 <- cast0$model$residuals[-1]
+plot(resid0, main = 'Residuals of Robust STL', ylab = "")
+abline(0,0)
+
+```
+The robust STL decomposition doesn't really make a difference, the residuals plot looks very similar
+
+```{r test}
+observed_stl = cast$model$x[148:155]
+predicted_stl = cast$model$fitted[148:155]
+
+rmse_stl = sqrt(mean((observed_stl - predicted_stl) ^ 2))
+print(rmse_stl)
+
+cast2 <- snaive(seas_adj)
+
+observed_sn = cast2$model$x[148:155]
+predicted_sn = cast2$model$fitted[148:155]
+
+rmse_sn = sqrt(mean((observed_sn - predicted_sn) ^ 2))
+print(rmse_sn)
+```
+The stlf() forecast has a much lower RMSE, so it's better than the snaive() forecast.
+
+## Problem 6.7
+
+```{r 6.7}
+data <- writing
+sevts <- ts(data, start = 0, freq=12)
+plot(sevts)
+
+```
+
+The data doesn't look stationary as there seems to be an upward trend, so the mean is increasing with time. It appears that variance may be increasing somewhat over time as well. Thus, using a Box-Cox transformation is appropriate, and we should use the random walk with drift method to account for the mean "drifting" over time.
+
+```{r 6.7 forecast}
+fore <- stlf(sevts, method='rwdrift', lambda = "auto")
+print(fore)
+plot(fore)
+```
+
+## Problem 6.8
+
+```{r 6.8}
+data <- fancy
+eits <- ts(data, start = 0, freq=12)
+plot(eits)
+
+```
+
+The data appeaar to be increasing in variance over time, but the mean is not really changing all that much. Thus, a Box-Cox transformation is appropriate, but it also makes sense to use a naive method for the stlf() function as there is not much drift apparent.
+
+```{r 6.8 cast}
+fore1 <- stlf(eits, method='naive', lambda = "auto")
+print(fore1)
+plot(fore1)
+
+```
+

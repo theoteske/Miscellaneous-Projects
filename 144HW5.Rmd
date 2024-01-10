@@ -1,0 +1,278 @@
+---
+title: "144HW5"
+author: "Theo Teske"
+date: "2023-03-10"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(devtools)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+library(car)
+library(AER)
+library(broom)
+library(leaps)
+library(forecast)
+library(tseries)
+library(seasonal)
+library(fable)
+library(stats)
+library(qcc)
+library(vars)
+library(fpp3)
+library(MuMIn)
+library(FinAna)
+
+```
+
+## Problem 1
+
+```{r cars}
+data <- read.table("C:/Users/Theo/Downloads/S&P 500 Historical Data (1).csv", header=TRUE,
+   sep=",")
+
+#update and plot S&P 500 returns time series
+price <- rev(data$Price)
+returns <- rev(as.numeric(gsub("%","",data$Change..)))
+returns_ts <- ts(returns, freq=52, start=c(2000, 1))
+plot(returns_ts)
+sqreturns <- returns*returns
+
+#plot acf, pacf for returns, sqreturns
+acf(returns)
+pacf(returns)
+acf(sqreturns)
+pacf(sqreturns)
+```
+
+The volatility doesn't appear to change too much between recent times and past times.
+
+Looking at the ACF and PACF of returns, we only see one slight serial correlation at a lag of 1 week and another very slight autocorrelation at a lag of 29 weeks, so the series is uncorrelated. The ACF of squared returns has significant autocorrelations through the first 8 lags, and in the PACF the first 3 lags are all serially correlated, as are the 7th, 12th, 23rd, and 25th, indicating that the series is autocorrelated with the autocorrelation functions. These dynamics suggest an ARCH(3) or perhaps an ARCH(5) model.
+
+```{r plotting}
+arch5 <- garch(returns_ts,c(0,5))
+hhat <- ts(arch5$fitted.values[,1])
+plot.ts(hhat, ylab="Variance", main="Estimated ARCH(5) standard deviation for S&P 500 returns", lwd=1.5)
+```
+
+One could easily use the equivalent, more parsimonious GARCH(1,1) model instead, which only uses two parameters to capture the dynamics of the conditional variance rather than 5.
+
+## Problem 2
+
+We will use the more parsimonious GARCH(1,1) model for forecasting volatility. The one-step ahead forecast $\sigma_{t+1|t}$ is simply the fitted values from our GARCH(1,1) model. The two-step ahead forecast is given by:
+$\sigma_{t+2|t}=\sqrt{\omega+(\alpha+\beta)\sigma_{t+1|t}^2}$
+
+```{r forecast}
+gar <- garch(returns_ts, c(1,1))
+
+#one-step ahead forecast is simply fitted values
+cast1 <- gar$fitted.values[,1]
+
+#two-step ahead forecast
+cast2 <- sqrt(gar$coef[1]+(gar$coef[2]+gar$coef[3])*cast1^2)
+
+```
+
+Now, we construct a 95% interval forecast for the S&P 500 returns based on our 1-step ahead volatility forecast.
+
+```{r freer}
+#95% confidence interval for 1-step ahead forecast
+mu<- mean(returns)
+min <- mu-1.96*cast1
+max <- mu+1.96*cast1
+
+conf <- data.frame(min, max)
+colnames(conf) <- c('Lower bound','Upper bound')
+print("(95% Interval Forecast for S&P 500 returns: ")
+print(conf)
+
+```
+
+
+
+
+## Problem 3
+
+We find quarterly GDP and CPI data from FRED.
+
+```{r reading in}
+gdp <- read.table("C:/Users/Theo/Downloads/GDP.csv", header=TRUE,
+   sep=",")
+
+cpi <- read.table("C:/Users/Theo/Downloads/CPALTT01USQ661S.csv", header=TRUE,
+   sep=",")
+
+#construct gdp growth rate
+gdpts <- ts(gdp$GDP[53:304], start=c(1960, 1), freq=4)
+gdpgr <- 100*diff(log(gdpts))
+plot(gdpgr, main="Growth Rate of US GDP")
+mu_g <- mean(gdpgr)
+print(paste("Unconditional mean of GDP Growth Rate: ", mu_g))
+
+#construct inflation rate
+cpits <- ts(cpi$CPALTT01USQ661S, start=c(1960,1), freq=4)
+infl <- 100*diff(cpits)/cpits
+plot(infl, main="Inflation rate of USD")
+mu_i <- mean(infl)
+print(paste("Unconditional mean of Inflation Rate: ", mu_i))
+
+```
+
+```{r implementing (g)arch}
+#creating squared returns time series
+sqgdpgr <- gdpgr^2
+sqinfl <- infl^2
+
+#plot ACF, PACF for returns, squared returns of GDP and CPI
+acf(coredata(gdpgr), main="ACF of GDP Growth Rate")
+pacf(coredata(gdpgr), main="PACF of GDP Growth Rate")
+acf(coredata(sqgdpgr), main="ACF of Squared GDP Growth Rate")
+pacf(coredata(sqgdpgr), main="PACF of Squared GDP Growth Rate")
+
+acf(coredata(infl), main="ACF of Inflation")
+pacf(coredata(infl), main="PACF of Inflation")
+acf(coredata(sqinfl), main="ACF of Squared Inflation")
+pacf(coredata(sqinfl), main="PACF of Squared Inflation")
+
+```
+
+Looking at the ACF of the GDP growth rate time series, we don't really see any autocorrelations, and we only see one significant spike in the PACF. However, the PACF of the squared GDP growth rate has three significant spikes and the ACF has one, suggesting that an ARCH(1) model might be appropriate.
+
+The ACF of the squared inflation rate time series shows several autocorrelations, but the ACF of the inflation rate series does as well. The PACF of the squared inflation rate has five significant spikes, while the PACF of the inflation rate only has 3. So, we could choose an ARCH(5) model, but the GARCH(1,1) model is more parsimonious.
+
+```{r making models a}
+gdp_ar <- garch(gdpgr,c(0,1))
+infl_gar <- garch(infl, c(1,1))
+
+gdpcast <- gdp_ar$fitted.values[,1]
+plot(gdpcast, main="1-step ahead volatility forecast for GDP Growth Rate")
+inflcast <- infl_gar$fitted.values[,1]
+plot(inflcast, main="1-step ahead volatility forecast for Inflation Rate")
+
+```
+
+We construct our 95% confidence intervals as follows:
+$r_t=\mu\pm1.96\sigma_{t|t-1}$
+where $r_t$ is the estimate of the conditional mean, $mu$ is the unconditional mean, and $\sigma_{t|t-1}$ is our 1-step ahead volatility forecast, i.e. our estimated conditional standard deviation.
+
+```{r confints}
+gdpmin <- mu_g-1.96*gdpcast
+gdpmax <- mu_g+1.96*gdpcast
+
+gdpconf <- data.frame(gdpmin, gdpmax)
+colnames(gdpconf) <- c('Lower bound','Upper bound')
+print("(95% Interval Forecast for GDP Growth Rate: ")
+print(gdpconf)
+
+inflmin <- mu_i-1.96*inflcast
+inflmax <- mu_i+1.96*inflcast
+
+inflconf <- data.frame(inflmin, inflmax)
+colnames(inflconf) <- c('Lower bound','Upper bound')
+print("(95% Interval Forecast for Inflation Rate: ")
+print(inflconf)
+
+
+```
+
+## Problem 4
+
+```{r pressure}
+dat <- us_gasoline
+ts <- ts(dat$Barrels, freq=52, start=c(1991, 6))
+plot(ts)
+
+```
+
+```{r dynamic harmonic regression}
+fit1 <- auto.arima(ts, xreg=fourier(ts, K=5), seasonal=FALSE, lambda=0)
+fit2 <- auto.arima(ts, xreg=fourier(ts, K=6), seasonal=FALSE, lambda=0)
+fit3 <- auto.arima(ts, xreg=fourier(ts, K=7), seasonal=FALSE, lambda=0)
+print(paste("AICc with K=5: ", fit1$aicc))
+print(paste("AICc with K=6: ", fit2$aicc))
+print(paste("AICc with K=7: ", fit3$aicc))
+
+fit2 %>% forecast::forecast(xreg=fourier(ts, K=6, h=52)) %>% autoplot(lwd=1.8)
+
+```
+
+We notice that the AICc is lower for K=6 than it is for both K=5 and K=7, so we choose K=6. A 1-year (52 week) ahead forecast is visible above.
+
+We compare this to the harmonic regression from Exercise 7.5:
+
+```{r harmon}
+
+k1=1+5*2
+n=1355
+
+reg1 <- tslm(ts~trend+fourier(ts, K=5))
+print(paste("AICc with K=5: ", AIC(reg1) + (2*(k1^2)+2*k1)/(n-k1-1)))
+k2=k1+2
+
+reg2 <- tslm(ts~trend+fourier(ts, K=6))
+print(paste("AICc with K=6: ", AIC(reg2) + (2*(k2^2)+2*k2)/(n-k2-1)))
+k3=k2+2
+
+reg3 <- tslm(ts~trend+fourier(ts, K=7))
+print(paste("AICc with K=7: ", AIC(reg3) + (2*(k3^2)+2*k3)/(n-k3-1)))
+```
+We choose the model with K=6 for our linear harmonic regression.
+
+```{r checkresid}
+checkresiduals(fit2)
+checkresiduals(reg2)
+
+```
+
+The residuals appear to be significantly more stationary for the dynamic harmonic regression model, as only a few lags are beyond the significance threshold in the ACF, whereas the ACF for the linear harmonic regression model shows that every lag is serially correlated. What's more, the residuals of the dynamic harmonic regression model are clearly normally distributed, while the distribution of the residuals of the linear regression model is not as obviously normal.
+
+Because these data have a long seasonal period (weekly data has a seasonal period $m\approx52$), they are best modelled using Fourier terms, which allow for any length seasonality, with short-term dynamics handled by an ARMA error. Seasonal versions of ARIMA and ETS models are designed for data with shorter periods, such as quarterly or monthly data. In fact, `ETS()` restricts seasonality to a maximum period of 24, because as $m$ becomes large, estimating $m-1$ parameters for the initial seasonal states becomes almost impossible. For ARIMA models, seasonal differencing of high order doesn't really make sense, as we compare what happened this week with what happened a year ago and there is no constraint that the seasonal pattern is smooth.
+
+## Problem 5
+
+We look at retail data from the Australian Capital Territory, and look at turnover rate for cafes, restaurants and catering services, from April 1982 to December 2018.
+
+```{r neuralnet}
+retail <- aus_retail
+ret <- ts(retail$Turnover[1:441], freq=12, start=c(1982,4))
+
+#create our model and plot a 3-year ahead forecast
+fit <- nnetar(ret, lambda=0)
+autoplot(forecast::forecast(fit,h=36))
+
+#create 9 possible future sample paths
+sim <- ts(matrix(0, nrow=20L, ncol=9L),
+  start=end(ret)[1L]+1L)
+for(i in seq(9))
+  sim[,i] <- simulate(fit, nsim=20L)
+autoplot(ret) + autolayer(sim)
+
+#forecast with prediction interval
+fcast <- forecast::forecast(fit, PI=TRUE, h=36)
+autoplot(fcast)
+
+```
+
+We can also look at other data we've considered in class using an NNAR model: 
+
+```{r cafe}
+cpi <- aus_accommodation
+cpits <- ts(cpi$CPI[1:74], freq=4, start=c(1998,1))
+autoplot(cpits)
+
+#generate simple forecast
+neur <- nnetar(cpits, lambda=0)
+autoplot(forecast::forecast(neur,h=12))
+
+#forecast with prediction interval
+neurcast <- forecast::forecast(neur, PI=TRUE, h=12)
+autoplot(neurcast)
+```
+
+
+
+
