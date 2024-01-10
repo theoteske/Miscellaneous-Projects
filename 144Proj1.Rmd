@@ -1,0 +1,273 @@
+---
+title: "Time-Series Analysis of Apple Prices in St. Petersburg from 2013 to 2020"
+author: "Theo Teske"
+date: "2023-01-26"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load libraries
+library(tseries)
+library(forecast)
+library(fpp3)
+library(tseries)
+library(seasonal)
+library(fable)
+library(stats)
+library(fpp)
+require(graphics)
+rm(list = ls(all = TRUE))
+
+# Load Libraries
+library("fImport")
+#library(RQuantLib)
+library(nlstools)
+library(tseries)
+library(Quandl)
+library(zoo)
+library(PerformanceAnalytics)
+library(quantmod)
+library(car)
+library(FinTS)
+#library(fOptions)
+library(forecast)
+require(stats)
+#library(stockPortfolio)
+library(vars)
+library(XML)
+library(fBasics)
+library(timsac)
+library(TTR)
+library(lattice)
+library(foreign)
+library(MASS)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+require("datasets")
+require(graphics)
+library(RColorBrewer)
+library(dynlm)
+
+options(warn=-1)
+```
+
+## Introduction
+
+The dataset we use describes the price of apples in five different Russian cities over time, and is sourced from the Russian Statistical Service. We focus specifically on the data from St. Petersburg, spanning from January 2013 to March, 2020. Precisely, the units are the prices, in Rubles, of 1 kilogram of apples in St. Petersburg, Russia, measured monthly. We treat this price data as a time series. Apples are generally harvested in the fall, so the time series should exhibit clear seasonality, and due to inflation, the price of apples should increase over time, resulting in an upward trend.
+
+## Analyzing the Data
+
+```{r beginning}
+
+# Read in data
+dat <- read.table("C:/Users/Theo/Downloads/apples_ts.csv", header=TRUE,
+   sep=",")
+
+# Transpose data so each city is a column rather than years being columns
+fr <- as.data.frame(dat)
+final_df <- as.data.frame(t(fr))
+
+# Choose Petersburg
+vpr <- as.numeric(final_df$V3[-1])
+
+# Create time series, then plot it
+tspr<- ts(vpr,start=2013,freq=12)
+
+plot(tspr, xlab = "Year", ylab="Price of 1 kg of Apples in Rubles", main="Price of Apples in St. Petersburg from Jan 2013 to Mar 2020")
+lines(tspr)
+
+```
+
+As expected, apple price seems to peak around midsummer each year, declining in the fall (likely due to the harvest increasing supply). This pattern becomes particularly pronounced in the last three full years of  data.  Therefore, we observe seasonality. What's more, we see a clear upward trend in apple price. This indicates that the mean is increasing over time, so the data cannot be covariance stationary.
+
+```{r acf pacf}
+# Take ACF and PACF of time series
+acf(coredata(tspr),main="ACF of Apple Prices")
+pacf(coredata(tspr),main="PACF of Apple Prices")
+
+```
+
+
+In the ACF, we observe several autocorrelations that are significantly non-zero. Therefore, the time series is non-random. However, the autocorrelations do decay to zero eventually. In the PACF, we see strong correlation at lags of 1 and 2 months, which indicates that there is a high degree of autocorrelation between adjacent and near-adjacent observations.
+
+## Fitting different models to the data
+
+```{r results='hide', message=FALSE}
+# Creating time data for both models
+x1 <- seq(2013,24242/12,by=1/12)
+df <- data.frame(tspr, x1)
+
+# Fitting both a linear and a polynomial model to the data
+reg1 <- lm (tspr ~ x1)
+reg2 <- lm(tspr ~ poly(x1,4))
+
+# Plotting each fit on top of the original time series, with both figures in the same window
+require(gridExtra)
+plot1<-ggplot(df, aes(x1, tspr)) + 
+      labs(title = "Linear Model",
+        x = "Year",
+        y = "Price of Apples") + 
+      geom_line() +
+      geom_smooth(method = "lm", se = FALSE, formula = y ~ x)
+
+plot2<-ggplot(df, aes(x1, tspr)) + 
+      labs(title = "Polynomial Model",
+        x = "Year",
+        y = "Price of Apples") + 
+      geom_line() +
+      geom_smooth(method = "lm", se = FALSE, formula = y ~ poly(x,4))
+
+grid.arrange(plot1, plot2, nrow=2)
+
+```
+
+
+```{r resid plots}
+#residual vs fitted plot for linear model
+res <- resid(reg1)
+plot(fitted(reg1), res, main="Residuals vs Fitted Values for Linear Model", xlab="Fitted Value", ylab = "Residual")
+
+#add a horizontal line at 0 
+abline(0,0)
+
+#residual vs fitted plot for polynomial model
+res <- resid(reg2)
+plot(fitted(reg2), res, main="Residuals vs Fitted Values for Polynomial Model", xlab="Fitted Value", ylab = "Residual")
+
+#add a horizontal line at 0 
+abline(0,0)
+
+```
+
+The residuals of the polynomial model have much higher variance at higher time values, which suggests that heteroskedasticity is present. The residuals of the linear model look like they might have a quadratic or otherwise polynomial trend, which suggests that a linear model might be poorly specified and a polynomial model might be preferred.
+
+```{r hist of resid}
+
+# Creating histograms of the residuals for each model
+hist(resid(reg1), main = "Histogram of Residuals for Linear Model", xlab = "Difference between Observed Value and Predicted Value")
+
+hist(resid(reg2), main = "Histogram of Residuals for Polynomial Model", xlab = "Difference between Observed Value and Predicted Value")
+
+```
+
+It appears that the residuals of the polynomial model are centered around zero and follow a roughly symmetric, bell-shaped distribution, which suggests that they are normally distributed, as are the model's error terms. In contrast, the residuals of the linear model are centered around -10 and are clearly right-skewed, which suggests that the error terms of the model are not normally distributed. Thus, we conclude that the linear model is likely not correctly specified. 
+
+```{r stats}
+summary(reg1)
+```
+
+We note that the F-statistic of the linear model is 100.4, the t-value of its single variable is 10.021, which suggests that its estimated coefficient is more than 10 standard deviations away from zero. The adjusted R-squared is of the linear model is 0.5362, which means that only around 53.6% of the variation in the response variable, price, can be explained by the change in time.
+
+```{r stats1}
+summary(reg2)
+```
+
+Note that the t-statistic for the 3rd-degree term is -0.343, indicating that the term's coefficient is only 0.343 standard deviations from zero, and its associated p-value is 0.7324, which is large. Therefore, the F-statistic is influenced downward by this term, and is only 54.13, which is significantly less than the F-statistic of the linear model. However, realize that every other term has a t-value with absolute value greater than or equal to 2, and associated p-values less than or equal to 0.05, which suggests that their coefficients are all estimated to be significantly far from zero. So, the polynomial model has two more terms with significant explanatory power than the linear model; this explains why the adjusted R-squared value of this model is 0.7119, which is significantly greater than the adjusted R-squared value of the linear model.
+
+Now we test each of our models using both the Akaike Information Criterion (AIC) and the Bayesian Information Criterion (BIC).
+
+```{r aic bic}
+AIC(reg1, reg2)
+BIC(reg1, reg2)
+```
+Both the AIC and BIC return a lower value for the polynomial model, so both tests agree in their preference for the polynomial model over the linear model. It's especially noteworthy that the BIC preferred the polynomial model as well, because the BIC penalizes the model's extra variables more heavily.
+
+## Forecasting Using the Polynomial Model
+
+Now, we use the polynomial model to forecast 25 months ahead. The results can be seen below, with the lower and upper bounds of the respective 95% prediction interval for each prediction included.
+
+```{r forecast}
+# Create new time data to generate predictions for
+steps_ahead <- data.frame(x1 = seq(2020.25, 2022.25, by=1/12))
+
+# Create the forecast then print it
+reg2_cast = predict(reg2, new=steps_ahead, interval = "prediction", level=0.95)
+print(reg2_cast)
+
+```
+
+## Additive and Multiplicative Decomposition
+
+```{r additive decomp}
+# Perform additive decomposition then plot it
+dcmp_a <- decompose(tspr, "additive")
+plot(dcmp_a)
+
+# Store the inidividual components
+trend_a = dcmp_a$trend
+seasonal_a = dcmp_a$seasonal
+random_a = dcmp_a$random
+
+# Remove trend and seasonality
+detrend_seas_adj_a = tspr[7:81] - trend_a[7:81] - seasonal_a[7:81]
+
+# Do ACF and PACF
+acf(coredata(detrend_seas_adj_a), main= "ACF of Random Component of Additive Decomposition")
+pacf(coredata(detrend_seas_adj_a), main="PACF of Random Component of Additive Decomposition")
+```
+
+The ACF shows a significant amount of values above the significance threshold, so the time-series is not random. The autocorrelations appear to form a damped sine wave; they do eventually decay to zero.
+The PACF shows lags of 1, 2, 3, and 6 months are significant.
+
+Next, we perform a multiplicative decomposition of our time series.
+
+```{r mult decomp}
+# Perform multiplicative decomposition then plot it
+dcmp_m <- decompose(tspr, "multiplicative")
+plot(dcmp_m)
+
+# Store the inidividual components
+trend_m = dcmp_m$trend
+seasonal_m = dcmp_m$seasonal
+random_m = dcmp_m$random
+
+# Remove trend and seasonality
+detrend_seas_adj_m = (tspr[7:81]/trend_m[7:81])/seasonal_m[7:81]
+
+# Do ACF and PACF
+acf(coredata(detrend_seas_adj_m), main="ACF of Random Component of Multiplicative Decomposition")
+pacf(coredata(detrend_seas_adj_m), main="PACF of Random Component of Multiplicative Decomposition")
+
+```
+
+The ACF and PACF of the random component of the multiplicative decomposition both look much the same as the ACF and PACF of the random component of the additive decomposition.
+
+It appears from looking at the time-series plot on page 2 that a multiplicative decomposition would do well because the amplitude of the seasonality appears to increase over time. We can check whether this is supported by the respective Root Mean Square Error (RMSE) of each decomposition by noting that what is left after removing trend and seasonality are the residuals.
+
+```{r rmse}
+#RMSE for additive decomposition
+rmse_a <- sqrt(sum(detrend_seas_adj_a^2)/length(detrend_seas_adj_a))
+print(rmse_a)
+
+#RMSE for multiplicative decomposition
+rmse_m <- sqrt(sum(detrend_seas_adj_m^2)/length(detrend_seas_adj_m))
+print(rmse_m)
+
+```
+
+By the above, we find that the RMSE of the additive decomposition is 5.444, while the RMSE of the multiplicative decomposition is 1.001. This means that, on average, the value predicted by the additive decomposition is off by more than 5, while the value predicted by the multiplicative decomposition is barely off by 1. So, we conclude that the multiplicative decomposition is better.
+
+The residuals which are left over after removing trend and seasonality from each of our decompositions are very similarly distributed, as noted in our discussion of the ACF and PACF for each random component. Therefore, based on the decompositions, our models for the cycles would be very similar to each other.
+
+## Conclusions and Future Work
+
+The fact that the multiplicative decomposition had a smaller RMSE than the additive decomposition suggests that seasonality has increasing variance over time. Therefore, a multiplicative model should perform better than an additive (i.e. linear) one. This is further supported by both the AIC and BIC preferring the polynomial model to the linear model. We conclude that the polynomial model is the better trend model. To further support this, we could perform a RESET Test to confirm that the linear model is poorly specified. The forecast generated by the polynomial model is reprinted here:
+
+```{r end}
+print(reg2_cast)
+```
+
+We could also improve the analysis of the additive and multiplicative decompositions by using an STL decomposition rather than a classical one, as the classical decomposition can't provide trend data for the the first 6 or last 6 months. In an already small dataset, this could be a significant improvement. Of course, another potential improvement would be adding more years to the dataset, so there could be more data to analyze. Similarly, performing an analysis of apple prices in the other 4 cities and comparing them to one another could yield greater insight into apple price as well.
+
+## References
+
+Russian Statistical Service. (2021). *Apples: Monthly Prices in Five Cities* [Data set].
+https://www.kaggle.com/datasets/kapatsa/apple-prices-in-russian-regions
+

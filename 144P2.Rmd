@@ -1,0 +1,253 @@
+---
+title: "Econ 144 Project 2"
+author: "Theo Teske"
+date: "2023-02-22"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(devtools)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+library(car)
+library(AER)
+library(broom)
+library(leaps)
+library(forecast)
+library(tseries)
+library(seasonal)
+library(fable)
+library(stats)
+library(qcc)
+library(vars)
+
+```
+
+## I. Introduction
+
+Purchasing gold has long been seen in the financial world as a hedge against inflation, as gold is likely to retain its purchasing power for long periods of time. Thus, when other assets may experience price fluctuations, the price of gold is thought to remain more stable. In order to explore this notion, the 10-Year Expected Inflation from the Federal Reserve Bank of Cleveland, in percent, is compared against the log of the price of gold in USD from the World Gold Council. The Federal Reserve Bank of Cleveland estimates the expected rate of inflation over the next 30 years along with the inflation risk premium, the real risk premium, and the real interest rate. Their estimates are calculated with a model that uses Treasury yields, inflation data, inflation swaps, and survey-based measures of inflation expectations. Both datasets are monthly, and we consider data from both from January 1982 to July 2021.
+
+## II. Results
+
+```{r setudp}
+gold <- read.table("C:/Users/Theo/Downloads/1979-2021.csv", header=TRUE,
+   sep=",")
+
+infl <- read.table("C:/Users/Theo/Downloads/EXPINF10YR.csv", header=TRUE,
+   sep=",")
+
+gold_ts_nolog <- ts(gold$United.States.USD.[37:511], start=1982, freq=12)
+gold_ts <- log(gold_ts_nolog)
+infl_ts <- ts(infl$EXPINF10YR[1:475], start=1982, freq=12)
+```
+
+```{r plots}
+forecast::tsdisplay(gold_ts, plot.type="partial")
+forecast::tsdisplay(infl_ts, plot.type="partial")
+```
+
+Clearly neither time series is covariance stationary initially, but we can perform an STL decomposition to remove the trend and seasonality influencing the ACF and PACF plots. An additive decomposition makes sense because neither time series looks like its volatility changes over time.
+
+```{r stl}
+gold_stl <- stl(gold_ts, "periodic")
+autoplot(gold_stl)
+seas_gold = gold_stl$time.series[,1]
+trend_gold = gold_stl$time.series[,2]
+gold_r <- gold_stl$time.series[,3]
+
+forecast::tsdisplay(gold_r, plot.type="partial")
+
+infl_stl <- stl(infl_ts, "periodic")
+autoplot(infl_stl)
+seas_infl = (infl_stl$time.series[,1])
+trend_infl = (infl_stl$time.series[,2])
+#infl_r <- infl_ts-trend_infl-seas_infl
+infl_r <- infl_stl$time.series[,3]
+
+forecast::tsdisplay(infl_r, plot.type="partial")
+
+```
+
+Both time series look like they have trend, seasonal, and cyclic components. Based on the ACF and PACF of the gold time series' residuals, it looks like the cyclic component could be modelled by an ARMA(2,1) model, likely after differencing to remove the remaining seasonality visible in the ACF. For the inflation time series, again it looks like there's some seasonality left over after the STL decomposition judging by the ACF of the residuals, but after differencing an AR(2) model or an ARMA(2,1) model could be appropriate.
+
+```{r cyclic}
+gold_ar <- Arima(gold_r, order=c(2,1,1), include.drift=TRUE)
+summary(gold_ar)
+
+infl_ar <- Arima(infl_r, order=c(2,1,0), include.drift=TRUE)
+summary(infl_ar)
+```
+
+```{r testmodel}
+mod1 <- trend_gold+seas_gold+gold_ar$fitted
+plot(mod1, col="red", lwd = 1.0, ylab="Log of Gold Price (%)", main="Gold Time Series vs Model")
+lines(gold_ts, col="blue", lwd=1.0)
+legend(x = "topleft", legend=c("Observed Log of Gold Price", "Model"), fill = c("blue","red"))
+
+mod2 <- trend_infl+seas_infl+infl_ar$fitted
+plot(mod2, col="red", lwd = 1.0, ylab="Expected Inflation (%)", main="Inflation Time Series vs Model")
+lines(infl_ts, col="blue", lwd=1.0)
+legend(x = "topright", legend=c("Observed Inflation", "Model"), fill = c("blue","red"))
+
+```
+
+The models fitted above each have a trend component and seasonal component determined by an STL decomposition. The trend component fits a curve to the overall long-term shape of the time series, whereas the seasonal component approximates a pattern that repeats every year. On top of these two components, the remaining cyclic component is estimated by an ARIMA model; for the gold time series, an ARIMA(2,1,1) model was used, and for the inflation time series, an ARIMA(2,1,0) model was used.
+
+```{r resid}
+
+resg <- gold_ts - mod1
+plot(mod1, resg, main="Residuals vs fitted values plot for gold", xlab="Fitted Value", ylab = "Residual")
+#add a horizontal line at 0 
+abline(0,0)
+
+resi <- infl_ts - mod2
+plot(mod2, resi, main="Residuals vs fitted values plot for inflation", xlab="Fitted Value", ylab = "Residual")
+#add a horizontal line at 0 
+abline(0,0)
+
+```
+
+The residuals appear to be random and normally distributed for each time series; they resemble white noise, as desired.
+
+```{r acf}
+acf(resg)
+pacf(resg)
+
+acf(resi)
+pacf(resi)
+```
+The ACF and PACF for each model's residuals appear to show stationarity for the most part except for the PACF of the inflation model's residuals, where a few serial correlations are visible.
+
+```{r cusum}
+qcc::cusum(gold_ts, center = mod1)
+
+qcc::cusum(infl_ts, center = mod2)
+
+```
+
+The CUSUM plot for the gold model has 10 points beyond boundaries out of 475 and returns back to being within the boundaries quickly after each excursion. The CUSUM plot for the inflation model only has 7 points beyond boundaries, and again shows no pattern of straying beyond the boundaries.
+
+```{r diag}
+
+rmse_g <- sqrt(mean((gold_ts - mod1) ^ 2))
+rmse_i <- sqrt(mean((infl_ts - mod2) ^ 2))
+print(paste("RMSE Gold: ", rmse_g))
+print(paste("RMSE Inflation: ", rmse_i))
+
+```
+
+The RMSE for each model is very small. The RMSE for log(gold) is 0.037, which suggests that on average, the model's prediction is only off by 0.037 of the actual value for log(gold). The RMSE for inflation is similarly small, only 0.116.
+
+```{r castruer}
+castg <- stlf(gold_ts, method="arima", level=0.95, h=12)
+castg
+plot(castg)
+
+casti <- stlf(infl_ts, method="arima", level=0.95, h=12)
+casti
+plot(casti)
+
+#just for fun
+truinfl <- ts(infl$EXPINF10YR[476:487], start=2021.5833333, freq=12)
+lines(truinfl, col="red", lwd=2.0)
+```
+
+```{r other models}
+#arima
+alt_arg <- auto.arima(gold_ts)
+summary(alt_arg)
+forecast::forecast(alt_arg, h=12)
+
+alt_ari <- auto.arima(infl_ts)
+forecast::forecast(alt_ari, h=12)
+
+#mape
+mape_arg <- mean(abs((gold_ts-alt_arg$fitted)/gold_ts))
+print(paste("MAPE ARIMA gold: ", mape_arg))
+mape_ari <- mean(abs((infl_ts-alt_ari$fitted)/infl_ts))
+print(paste("MAPE ARIMA inflation: ", mape_ari))
+
+mape_mod1 <- mean(abs((gold_ts-mod1)/gold_ts))
+print(paste("MAPE Model gold: ", mape_mod1))
+mape_mod2 <- mean(abs((infl_ts-mod2)/infl_ts))
+print(paste("MAPE Model inflation: ", mape_mod2))
+
+```
+
+The model which includes trend, seasonality, and cyclic components performs better in terms of MAPE than the pure ARIMA model in predicting both log(gold) and inflation. We combine our model with the ARIMA model using a linear regression for both log(gold) and for inflation.
+
+```{r combine}
+comb.reg_g <- lm(gold_ts~mod1+alt_arg$fitted)
+
+mape_combg <- mean(abs((gold_ts-comb.reg_g$fitted.values)/gold_ts))
+print(paste("MAPE Combined gold: ", mape_combg))
+
+comb.reg_i <- lm(infl_ts~mod2+alt_ari$fitted)
+
+mape_combi <- mean(abs((infl_ts-comb.reg_i$fitted.values)/infl_ts))
+print(paste("MAPE Combined gold: ", mape_combi))
+
+```
+The MAPE from the forecast generated by combining our model and the ARIMA model is lower than the MAPE for either individual model when predicting both log(gold) and inflation.
+
+```{r var}
+x <- data.frame(gold_ts,infl_ts)
+var_est <- VAR(x, p=2, type="both")
+plot(var_est$varresult$gold_ts)
+plot(var_est$varresult$infl_ts)
+```
+
+Make sure to show the relevant plots and discuss your results from the fit
+
+```{r varextra}
+#plot irfs
+plf <- irf(var_est, impulse = "gold_ts", response = "infl_ts",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+plot(plf)
+
+pls <- irf(var_est, impulse = "infl_ts", response = "gold_ts",
+             n.ahead = 12, ortho = FALSE, runs = 1000)
+plot(pls)
+
+```
+
+The impact of an unanticipated one-unit upward shift in the log of gold price is visible in the first IRF plot, which shows a small negative shock before an upward swing. A similar shock in the inflation rate causes a slight negative shock in the log of gold price, which maintains its level.
+
+```{r granger}
+#granger test
+grangertest(gold_ts~infl_ts, order=1, data=x)
+grangertest(infl_ts~gold_ts, order=1, data=x)
+
+```
+
+At the *alpha = 0.05* significance level, we reject the null hypothesis for the first Granger test, so inflation influences the log of gold price, but we fail to reject the null for the second Granger test, so the log of gold price doesn't influence inflation.
+
+```{r varcast}
+cast_f <- predict(var_est, n.ahead=12, ci = 0.95)
+print(cast_f)
+plot(cast_f)
+
+mape_varg <- mean(abs((gold_ts-var_est$varresult$gold_ts$fitted.values)/gold_ts))
+print(paste("MAPE VAR gold: ", mape_varg))
+
+mape_vari <- mean(abs((infl_ts-var_est$varresult$infl_ts$fitted.values)/infl_ts))
+print(paste("MAPE VAR inflation: ", mape_vari))
+```
+
+The VAR forecast has a higher MAPE than the forecasts obtained from our model, from the ARIMA model, and from the model which combined both ours and the ARIMA model, so in terms of MAPE it performs worse.
+
+
+## III. Conclusions and future work
+
+We created a model by performing STL decompositions on two time series, one being the log of gold price, the other being the 10-Year Expected Inflation. We then used the trend and seasonal components generated by these decompositions along with an ARIMA model to estimate the cyclic component for each time series to generate a model which outperformed both a pure ARIMA model and a VAR model in forecasting both time series in terms of MAPE. After combining our model with the ARIMA model through a linear regression, we created a forecast which outperformed our initial model's forecast.
+For future work, combining our model with other forecasts, such as those generated by exponential smoothing or Holt-Winters, could create an even more accurate forecast. Also, finding data with greater frequency (i.e. daily) could lead to more accuracy in forecasts.
+
+## IV. References
+
+FRED Economic Data, St Louis Fed. (2023). *10-Year Expected Inflation* [Data set]. https://fred.stlouisfed.org/series/EXPINF10YR
+
+World Gold Council. (2021). *Monthly Gold Prices (1979-2021)* [Data set].
+https://www.kaggle.com/datasets/odins0n/monthly-gold-prices
