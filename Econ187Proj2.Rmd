@@ -1,0 +1,572 @@
+---
+title: "Nonlinear and Tree-Based Models"
+output: pdf_document
+date: "2023-05-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(ISLR2)
+library(MASS)
+library(class)
+library(ggplot2)
+library(boot)
+library(caret)
+library(class)
+library(nnet)
+library(glmnet)
+library(elasticnet)
+library(pls)
+library(leaps)
+library(splines)
+library(gam)
+library(tree)
+library(data.table)
+library(randomForest)
+library(gbm)
+#rm(list=ls())
+```
+
+## I. Introduction
+
+We investigate techniques that allow us to model a response variable in terms of some nonlinear function of the feature space. We consider methods both for when the response is quantitative and for when the response is categorical, and we employ a different dataset in each context (one for regression, and one for classification), each retrieved from the UCI Machine Learning Repository. In the proceeding section, we consider models which extend OLS to perform a kind of nonlinear regression. Then, in the next section we consider tree-based methods, first for regression and then for classification. The analysis done here is largely informed by *An Introduction to Statistical Learning: with Applications in R*, by James et al.
+
+## II. Non-Linear Models Extending OLS
+
+The standard linear regression model 
+
+\[
+\hat{y}_i=\beta_0+\beta_1x_{i1}+\beta_2x_{i2}+\dots+\beta_px_{ip+\epsilon_i}
+\]
+
+predicts the response variable $Y$ on the basis of a linear combination of the predictors $X_1, X_2,\dots,X_p$. However, sometimes we may desire more flexibility in order to capture nonlinear relationships between the predictors and the response variable. So, we will explore some non-linear regression models which give us this opportunity for greater complexity, and evaluate each model's performance using a train-test split and a  cross-validation on the training set.
+
+To study these methods in R, we use a dataset with 81 features extracted from 21263 superconductors along with the critical temperature of each material, the latter of which we attempt to predict. For the curious, the critical temperature is the temperature under which the material acts as a superconductor, meaning that electrical resistance vanishes and magnetic flux fields are expelled from the material, per Combescot. Attributes in the data include mean atomic mass, mean electron affinity, and mean fusion heat, among others.
+
+First, we read in our data for regression and split our data into a training set and a test set using a 75%/25% split. 
+
+```{r readindata1}
+#load in data
+super <- read.table("C:/Users/Theo/Downloads/superconduct.csv", header=TRUE, sep=",")
+super <- na.omit(super)
+
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+regtrainIndex <- createDataPartition(super$critical_temp, p = .75, list = FALSE, times = 1)
+regtrain <- super[regtrainIndex, ]
+regtest <- super[-regtrainIndex, ]
+
+```
+
+Next, we want to use a feature selection method to narrow down the 81 predictors at our disposal. Ideally, we would perform best subsets selection using the `regsubsets()` function, which exhaustively considers every possible subset of predictors to see which is the most predictive of our response variable. Unfortunately, this is infeasible for the superconductivity dataset, as we would have to generate and evaluate 
+
+\[
+\sum_{k=0}^{81}\binom{81}{k}=2^{81}\approx 2.4\times10^{24}
+\]
+
+models, considering that there are $\binom{81}{k}$ predictor-subsets of size $k$.
+
+Instead, using critical temperature as the response and the other variables as the predictors, we perform forward stepwise selection on the training set in order to identify a satisfactory model that uses only a subset of the predictors. We first fit an intercept-only model, then add one predictor at a time. Crucially, we choose which predictor to add based on which new model will provide the best improvement to our fit (i.e., yield the lowest AIC). This process continues until no added predictor will provide a significant reduction in AIC. 
+
+```{r stepwise}
+#define intercept-only model
+intercept_only <- lm(critical_temp ~ 1, data=regtrain)
+
+#define model with all predictors
+all <- lm(critical_temp ~ ., data=regtrain)
+
+#perform forward stepwise regression
+forward <- step(intercept_only, direction='forward', scope=formula(all), trace=0)
+
+#view results of forward stepwise regression
+forward$anova
+```
+
+### Piecewise Polynomial
+
+*Piecewise polynomial regression* allows us to split the data set into intervals based on the value of a predictor $X$, and then within each interval, model the data by a distinct linear combination of powers of the predictor $X, X^2,\dots, X^d$. 
+
+In general, we perform piecewise polynomial regression on a single variable at a time. So, we look at the output from our forward stepwise selection and work with the first variable chosen, which is `wtd_std_ThermalConductivity`. We can plot this against our response, `critical_temp`:
+
+```{r plotpred1}
+plot(regtrain$wtd_std_ThermalConductivity, regtrain$critical_temp,
+     xlab="wtd_std_ThermalConductivity", ylab="critical_temp",
+     main="Plotting critical_temp against the first predictor")
+
+```
+
+It appears that the data is segmented into two distinct intervals; the cutpoint, or "knot", is right around $c=100$. We find it exactly using the `cut()` function:
+
+```{r pwpoly}
+table(cut(regtrain$wtd_std_ThermalConductivity, 2))
+```
+We find that $c=107$. We can now split our training dataset into two along this cutpoint and fit two different polynomial regressions, one on each segment of the data. Our model can be expressed mathematically as
+
+\[
+\hat{y}_i=
+\begin{cases}
+\beta_{01}+\beta_{11}x_i+\dots+\beta_{d_11}x_i^{d_1}+\epsilon_i,& \text{if }x_i\leq c\,;\\
+\beta_{02}+\beta_{12}x_i+\dots+\beta_{d_22}x_i^{d_2}+\epsilon_i,& \text{if }x_i> c\,,\\
+\end{cases}
+\]
+
+where $d_1$ is the degree of the first polynomial and $d_2$ is the degree of the second.
+
+Next, we want to determine the optimal degree $d_k$ polynomial for each segment of data. Generally speaking, it is unusual to use $d_k$ greater than 3 or 4 because for large values of d, the polynomial curve can become overly flexible and can take on some very strange shapes. So, we employ a 10-fold cross-validation on each segment to determine each optimal $d_k$ value. Below, we print the RMSE after 10-fold cross-validation on the training set for $d_1=1,2,3,4$ respectively and then for $d_2=1,2,3,4$ respectively.
+
+```{r pwcv1}
+#split training set and test set along the chosen cutpoint
+df_c0 <- regtrain[regtrain$wtd_std_ThermalConductivity<107,]
+df_c1 <- regtrain[regtrain$wtd_std_ThermalConductivity>=107,]
+
+test_c0 <- regtest[regtest$wtd_std_ThermalConductivity<107,]
+test_c1 <- regtest[regtest$wtd_std_ThermalConductivity>=107,]
+
+#use CV to determine optimal degree polynomial for bin df_c0
+set.seed(1)
+df_c0_rmse<-c()
+
+for(i in seq(4)){
+df_c0_fit <- train(as.formula(paste0("critical_temp ~ poly(wtd_std_ThermalConductivity, ", i, ")")),
+                    data = df_c0,
+                    method = "lm",
+                    trControl = trainControl(method = "cv", number = 10),
+                    na.action=na.omit)
+pred_df_c0 <- predict(df_c0_fit, newdata = test_c0)
+df_c0_rmse[i]<-RMSE(pred_df_c0, test_c0$critical_temp)
+}
+
+#print rmse for df_c0
+df_c0_rmse
+
+#use CV to determine optimal degree polynomial for bin df_c1
+set.seed(1)
+df_c1_rmse<-c()
+
+for(i in seq(4)){
+df_c1_fit <- train(as.formula(paste0("critical_temp ~ poly(wtd_std_ThermalConductivity, ", i, ")")),
+                    data = df_c1,
+                    method = "lm",
+                    trControl = trainControl(method = "cv", number = 10),
+                    na.action=na.omit)
+pred_df_c1 <- predict(df_c1_fit, newdata = test_c1)
+df_c1_rmse[i]<-RMSE(pred_df_c1, test_c1$critical_temp)
+}
+
+#print rmse for df_c0
+df_c1_rmse
+
+```
+
+It appears that $d_1=4$ is optimal on the interval with `wtd_std_ThermalConductivity<107`, while $d_2=3$ is optimal on the other interval. We use these $d_k$-values when fitting our piecewise polynomial regression models.
+
+```{r fitpwpoly}
+#fit one cubic polynomial regression on each subdivided training set
+pwpoly0 <- lm(critical_temp~poly(wtd_std_ThermalConductivity, 4), data=df_c0)
+pwpoly1 <- lm(critical_temp~poly(wtd_std_ThermalConductivity, 3), data=df_c1)
+
+#plot the fit
+c0_lims <- range(df_c0$wtd_std_ThermalConductivity)
+c0.grid <- seq(from = c0_lims[1], to = c0_lims[2])
+preds0 <- predict(pwpoly0, newdata = list(wtd_std_ThermalConductivity = c0.grid), se = TRUE)
+se.bands0 <- cbind(preds0$fit + 2 * preds0$se.fit,
+    preds0$fit - 2 * preds0$se.fit)
+c1_lims <- range(df_c1$wtd_std_ThermalConductivity)
+c1.grid <- seq(from = c1_lims[1], to = c1_lims[2])
+preds1 <- predict(pwpoly1, newdata = list(wtd_std_ThermalConductivity = c1.grid), se = TRUE)
+se.bands1 <- cbind(preds1$fit + 2 * preds1$se.fit,
+    preds1$fit - 2 * preds1$se.fit)
+
+plot(regtrain$wtd_std_ThermalConductivity, regtrain$critical_temp, cex = .5, col = "darkgrey", xlab="wtd_std_ThermalConductivity", ylab="critical_temp")
+title("Piecewise cubic polynomial fit")
+lines(c0.grid, preds0$fit, lwd = 2, col = "violet")
+matlines(c0.grid, se.bands0, lwd = 1, col = "violet", lty = 3)
+lines(c1.grid, preds1$fit, lwd = 2, col = "purple")
+matlines(c1.grid, se.bands1, lwd = 1, col = "purple", lty = 3)
+```
+
+We can now evaluate how well our fit performs on the test set.
+
+```{r pwpolyeval}
+#report MSE for our picewise polynomial regression
+predpw0 <- predict(pwpoly0, newdata=test_c0)
+predpw1 <- predict(pwpoly1, newdata=test_c1)
+mse1 <- mean((predpw0-test_c0$critical_temp)^2)
+mse2 <- mean((predpw1-test_c1$critical_temp)^2)
+paste("RMSE of piecewise polynomial fit: ", sqrt((nrow(test_c0)*mse1+nrow(test_c1)*mse2)/nrow(regtest)))
+```
+
+We find that the RMSE of our piecewise polynomial fit is 22.455, so on average the value predicted by our model differs from the observed value of `critical_temp` in the test set by 22.455 K (degrees Kelvin).
+
+### Splines
+
+Note that the piecewise polynomial model we fit above is discontinuous at our cutpoint. If we impose the constraint of continuity in derivatives up to degree $d-1$ at each knot to a piecewise polynomial regression, we now have a *spline*. A spline of degree $d$ with $K$ knots can be expressed as 
+\[
+\hat{y}_i=\beta_0+\beta_1b_1(x_{i})+\beta_2b_2(x_i)+\dots+\beta_{K+d}b_{K+d} (x_i)+\epsilon_i
+\]
+
+for an appropriate choice of basis functions $b_1, b_2,\dots,b_{K+d}$. We will fit a natural spline, which adds the constraint that the function of $X$ is required to be linear at the boundary (in the region where $X$ is  smaller than the smallest knot, or larger than the largest knot). This produces more stable estimates at the boundaries.
+
+We can use a 10-fold cross-validation to determine how many degrees of freedom is optimal. Below, we print the RMSE on the training set for $df=1,2,\dots,10$ respectively.
+
+```{r splinecv}
+#use 10-fold CV to determine optimal degrees of freedom
+set.seed(1)
+spline_rmse<-c()
+
+#try out df=1,2,...,10
+for(i in seq(10)){
+spl_fit <- train(as.formula(paste0("critical_temp ~ ns(wtd_std_ThermalConductivity, df=", i, ")")),
+                    data = regtrain,
+                    method = "lm",
+                    trControl = trainControl(method = "cv", number = 10),
+                    na.action=na.omit)
+pred_dum <- predict(spl_fit, newdata = regtest)
+spline_rmse[i]<-RMSE(pred_dum, regtest$critical_temp)
+}
+
+#print and plot rmse for spline with df=1,2,...,10
+spline_rmse
+plot(seq(10), spline_rmse, type = "b",
+     xlab = "Degrees of Freedom (df)", ylab = "RMSE", lwd=2, col="darkgreen", main="Spline RMSE against degrees of freedom")
+```
+
+The optimal RMSE using a natural spline is 22.37, which occurs when $df=9$. While the spline with $df=9$ degrees of freedom performs best in terms of RMSE, the spline with only $df=4$ degrees of freedom performs essentially just as well. We can plot both of them on the same scatterplot:
+
+```{r splineplots}
+#produce the fits
+fitsp4<- lm(critical_temp~ns(wtd_std_ThermalConductivity, df=4), data=regtrain)
+fitsp9<- lm(critical_temp~ns(wtd_std_ThermalConductivity, df=9), data=regtrain)
+
+#plot the fit
+splims <- range(regtrain$wtd_std_ThermalConductivity)
+sp.grid <- seq(from = splims[1], to = splims[2])
+predsp4 <- predict(fitsp4, newdata = list(wtd_std_ThermalConductivity = sp.grid), se = TRUE)
+se.bansp4 <- cbind(predsp4$fit + 2 * predsp4$se.fit,
+    predsp4$fit - 2 * predsp4$se.fit)
+predsp9 <- predict(fitsp9, newdata = list(wtd_std_ThermalConductivity = sp.grid), se = TRUE)
+se.bansp9 <- cbind(predsp9$fit + 2 * predsp9$se.fit,
+    predsp9$fit - 2 * predsp9$se.fit)
+
+plot(regtrain$wtd_std_ThermalConductivity, regtrain$critical_temp, xlim = splims, cex = .5,
+     col = "darkgrey", xlab="wtd_std_ThermalConductivity", ylab="critical_temp")
+title("Splines with df=4 and df=9")
+lines(sp.grid, predsp4$fit, lwd = 2, col = "blue")
+lines(sp.grid, predsp9$fit, lwd = 2, col = "red")
+matlines(sp.grid, se.bansp4, lwd = 1, col = "blue", lty = 3)
+matlines(sp.grid, se.bansp9, lwd = 1, col = "red", lty = 3)
+legend(12, 184, legend=c("df=4", "df=9"), 
+       fill = c("blue","red"))
+
+```
+
+### GAMs
+
+Each of the methods we have employed so far involve modelling $Y$ based on a function of a single predictor $X$. If we want to flexibly predict $Y$ on the basis of several predictors $X_1, X_2,\dots,X_p$, we use *generalized additive models (GAMs)*, which replace each linear component $\beta_jx_{ij}$ in OLS with a smooth, nonlinear function $f_j(x_{ij})$. We can write this model as
+$$
+\begin{aligned}
+\hat{y}_i&=\beta_0+f_1(x_{i1})+f_2(x_{i2})+\dots+f_p(x_{ip})+\epsilon_i\\
+&=\beta_0+\sum_{j=1}^p f_j(x_{ij})+\epsilon_i.
+\end{aligned}
+$$
+We can now include more predictors from our initial forward stepwise selection. We will fit a model based on the first eight variables chosen: `wtd_std_ThermalConductivity`, `gmean_ElectronAffinity`, `range_atomic_radius`, `std_atomic_radius`, `entropy_ElectronAffinity`, `wtd_gmean_ElectronAffinity`, `wtd_std_Valence`, and `wtd_mean_ElectronAffinity`. These are all quantitative variables, so we use the `s()` function from the `gam` library to specify that we want to fit a smoothing spline to each of them.
+
+```{r gamfit}
+#fit gam model using the selected predictors
+supgam <- gam(critical_temp~s(wtd_std_ThermalConductivity)+s(gmean_ElectronAffinity)+
+                s(range_atomic_radius)+s(std_atomic_radius)+s(entropy_ElectronAffinity)+
+                s(wtd_gmean_ElectronAffinity)+s(wtd_std_Valence)+s(wtd_mean_ElectronAffinity), 
+              data=regtrain)
+
+#plot the fit
+plot(supgam, se = TRUE, col = "blue")
+
+```
+
+We can consult the ANOVA to see which predictors are significant, and to see which predictors have a significantly nonlinear relationship with the response. Looking at the plots above, it appears that every variable's relationship with the response is somewhat nonlinear.
+
+```{r anovagam}
+summary(supgam)
+```
+
+The Anova for Parametric Effects tells us that every predictor we included is extremely significant, which shows that our stepwise forward selection did its job. Meanwhile, the Anova for Nonparametric Effects indicates that every predictor has a very significantly nonlinear relationship with the response, so the GAM is appropriate to model these complex relationships that linear regression would fail to capture. Finally, we evaluate our GAM on the test set.
+
+```{r gameval}
+#evaluate the model on the test set
+gampred <- predict(supgam, newdata = regtest)
+paste("RMSE for GAM fit: ", sqrt(mean((gampred - regtest$critical_temp)^2)))
+
+```
+As expected, with an RMSE of 19.07 the GAM significantly outperforms both the piecewise polynomial model and the spline model. This is not surprising as each of the latter models was only able to harness the predictive power of a single variable, whereas the GAM used eight predictors.
+
+## III. Tree-Based Models
+
+Tree-based models involve segmenting the feature space into several smaller regions through a series of "splits" or binary partitions, then classifying new observations based on the mean or majority vote of the region in which the observation lies. Trees are simple to understand and easy to interpret, and can be flexibly applied to regression and classification problems. What's more, their predictive accuracy can be greatly improved by combining many trees, which we will observe by evaluating four different methods via a train-test split and a cross-validation on the training set.
+
+### Regression Tree
+
+A *decision tree* is a series of splits applied to the data based on *splitting rules*, such as `mean_Density > 4650`, which partition the observations based on the value of a single predictor. In the context of regression, the model chooses the rule for each split which minimizes the sum of squared errors when we make our $\hat{y}$ the means of the region each observation falls into as decided by the rule. To see this in practice, we fit a regression tree to the same data that we used in the previous section. 
+
+```{r regtree}
+set.seed(12)
+
+#create regression tree
+reg_tree <- tree(critical_temp ~ ., regtrain)
+summary(reg_tree)
+
+```
+
+Interestingly, this regression tree and the stepforward selection method both picked out statistics related to thermal conductivity as being highly predictive of critical temperature. We also note that the final tree only created splits based on seven out of 81 possible predictors.
+
+```{r regtreeplot}
+#plot the tree
+plot(reg_tree)
+text(reg_tree, pretty = 0)
+
+#evaluate performance
+regtreepred<-predict(reg_tree, newdata=regtest)
+plot(regtreepred, regtest$critical_temp, main="y vs y-hat plot for regression tree")
+abline(0,1)
+paste("RMSE for unpruned tree: ", sqrt(mean((regtreepred-regtest$critical_temp)^2)))
+```
+
+Observe that the model made its first split based on the variable `range_ThermalConductivity`, which already resulted in a terminal node on the next layer, so the model predicts that `critical_temp = 9.525` for the superconductors for which `range_ThermalConductivity < 399.896`. The RMSE for the unpruned tree evaluated on the test set is 18.02, so on average the predictions made by our regression tree differ from the observed values in the test set by 18.02 K. Interestingly, this regression tree also outperforms the GAM, which makes sense because the regression tree was able to consider every possible predictor, while the GAM was fitted based on a specified subset of eight predictors.
+
+```{r regtreecv}
+set.seed(334)
+cv.reg_tree <- cv.tree(reg_tree)
+cv.reg_tree
+par(mfrow = c(1, 2))
+plot(cv.reg_tree$size, cv.reg_tree$dev, type = "b", main="MSE vs tree size")
+
+```
+
+The 10-fold cross-validation selects 8 terminal nodes as optimal, which is exactly what the `tree()` function did without any pruning. Note that, in the context of regression, the deviance reported by the `cv.tree()` function represents the mean squared error (MSE) of each model. We can try pruning with 3 terminal nodes to verify that we get a worse performance on the test set.
+
+```{r regtreeprune}
+prune.regtree <- prune.tree(reg_tree, best = 3)
+plot(prune.regtree)
+text(prune.regtree, pretty = 0)
+
+#evaluate performance
+regtreepredune<-predict(prune.regtree, newdata=regtest)
+paste("RMSE for pruned tree: ", sqrt(mean((regtreepredune-regtest$critical_temp)^2)))
+```
+
+The RMSE for the pruned tree is 20.35, so the unpruned tree does indeed outperform the pruned tree.
+
+### Classification Tree
+
+Applying a decision tree to a classification problem is very similar to what we already did in the regression setting, but now we choose splits based on the classification accuracy associated with each splitting rule. For the purpose of studying classification trees, we employ a data set involving the binary classification of 569 tumor cells as benign or malignant, based on 31 features extracted from visual analysis of images of the tumors. We begin by reading in and cleaning our data, before performing a train-test split.
+
+```{r class}
+#load in data
+cancer <- fread("C:/Users/Theo/Downloads/Cancer_Data.csv",fill=TRUE)
+garbage0<-class(as.data.frame(cancer))
+cancer<-cancer[,-33]
+cancer<-na.omit(cancer)
+dum <- factor(ifelse(cancer$diagnosis=="M", "Malignant", "Benign"))
+cancer$diagnosis<-dum
+colnames(cancer) <- make.names(colnames(cancer))
+
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+clatrainIndex <- createDataPartition(cancer$diagnosis, p = .75, list = FALSE, times = 1)
+clatrain <- cancer[clatrainIndex, ]
+clatest <- cancer[-clatrainIndex, ]
+```
+
+Now, we fit a classification tree to our training data.
+
+```{r clatree}
+#create tree model
+cla_tree <- tree(diagnosis~., clatrain)
+summary(cla_tree)
+plot(cla_tree)
+text(cla_tree, pretty=0)
+```
+
+We note that the first split is based on `perimeter_worst`, while the two splits on the next layer are both based on `concave.points_worst`, so the model has decided that these two variables are important in predicting whether a mass is benign or malignant. The model has used only nine variables out of a possible 31 to segment the data, and it has 12 terminal nodes. We evaluate its accuracy on the test set.
+
+```{r claeval}
+#evaluate full tree model on the test set
+cla_tree.pred <- predict(cla_tree, clatest,
+    type = "class")
+confusionMatrix(cla_tree.pred, clatest$diagnosis)
+
+```
+
+The single, unpruned classification tree performs well on the test set with 90.85% accuracy. It has higher specificity than sensitivity, so it is more likely to produce a false negative than a false positive. To evaluate whether pruning the tree will improve its performance on the test set, we employ a 10-fold cross-validation.
+
+```{r clacv}
+set.seed(21)
+
+#prune tree through 10-fold CV
+cv.cla_tree <- cv.tree(cla_tree, FUN = prune.misclass)
+cv.cla_tree
+
+#plot results of CV
+par(mfrow = c(1, 2))
+plot(cv.cla_tree$size, cv.cla_tree$dev, type = "b", main="Deviance vs tree size")
+```
+
+The cross-validation suggests that pruning the tree so it has only seven terminal nodes is optimal; we do so and reevaluate its performance.
+
+```{r claprune}
+#prune tree and plot it
+prune.cla_tree <- prune.misclass(cla_tree, best = 7)
+plot(prune.cla_tree)
+text(prune.cla_tree, pretty = 0)
+
+#evaluate pruned tree on test set
+prunecla.pred <- predict(prune.cla_tree, clatest,
+    type = "class")
+confusionMatrix(prunecla.pred, clatest$diagnosis)
+```
+
+We have the exact same classification accuracy, but a significantly simpler and more interpretable tree. We therefore prefer the pruned tree as it is more *parsimonious*. Note also that the first splits of the pruned tree are based on the exact same variables as the first splits of the unpruned tree, namely `perimeter_worst` and `concave.points_worst`.
+
+### Random Forest
+
+While decision trees have many key advantages, such as their easy interpretability, they also suffer from a high sensitivity to the data on which they are trained. To lower variance, and thereby improve predictive accuracy, we can aggregate many decision trees and average over them. To do so, we use a procedure called *bagging*, or bootstrap aggregating.
+
+To perform bagging, we generate $B$ different bootstrapped data sets from our training set. We then train our method (in this case, we create a decision tree) on the $b$th bootstrapped data set to get $\hat{f}^{*b}(x)$, then average over all the bootstrapped data sets, yielding 
+
+\[
+\hat{f}_{bag}(x)=\frac{1}{B}\sum_{b=1}^B\hat{f}^{*b}(x).
+\]
+
+Now, we want to fit a *random forest* model, which is essentially the same as the above but with a crucial caveat. We perform bagging, but when building each decision tree, we only consider a random sample of $m<p$ predictors each time a split in the tree is decided. This small tweak decorrelates each of the trees we produce, substantially reducing variance when we average over them. In general, when building classification trees (as we are here), we would default to $m=\sqrt p$.
+
+Within the `randomForest` library, we can control $B$ with the `ntree` parameter; its default value is 500, which should be sufficient for our data set. A higher number of trees will perform better, but we should experience diminishing returns once our accuracy rate starts to converge, and producing more trees linearly increases the computation we need. So, we will be optimizing the hyperparameter $m$ by finding the optimal value of the parameter `mtry` through a 10-fold cross-validation, repeated three times.
+
+```{r ranfor}
+#create train control: 10-fold cv, repeated 3 times
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3,
+                        search = 'random')
+
+#set seed for reproducibility
+set.seed(1)
+
+#have caret generate 20 mtry values with tuneLength = 20
+rf_random <- train(diagnosis ~ .,
+                   data = clatrain,
+                   method = 'rf',
+                   metric = 'Accuracy',
+                   tuneLength  = 20, 
+                   trControl = control)
+print(rf_random)
+```
+
+We observe that the random forest model with $m=9$ performed the best on the training set. We can also plot the results from our 10-fold cross-validation to visualize how varying $m$ impacts the model's performance in terms of classification accuracy.
+
+```{r ranforplot}
+plot(rf_random, main="Random forest accuracy vs mtry value")
+```
+
+Now, we create a random forest model with the optimized value $m=9$ to see how it will perform on the test set.
+
+```{r ranforeval}
+set.seed(1)
+
+#train the model with mtry=9
+rf_final <- randomForest(diagnosis~., data=clatrain, mtry=9)
+
+#evaluate its performance on the test set
+rf.pred <- predict(rf_final, clatest,
+    type = "class")
+confusionMatrix(rf.pred, clatest$diagnosis)
+```
+
+The random forest model with $m=9$ performed significantly better than the single classification tree did, with a test set accuracy of 96.5%. In the interest of preserving some interpretability, we can also make note of which predictors our random forest model considered the most important.
+
+```{r rfimp}
+#print and plot importance of variables
+importance(rf_final)
+varImpPlot(rf_final, n.var=10, main="Variable importance in random forest")
+```
+
+Variable importance for a classification task is computed using the mean decrease in Gini index,
+\[
+G=\sum_{k=1}^K\hat{p}_{mk}(1-\hat{p}_{mk})
+\]
+
+and is expressed relative to the maximum. We note that the two most important predictors according to this metric are `perimeter_worst` and `concave.points_worst`, followed by the group of three predictors `radius_worst`, `area_worst`, and `concave.points_mean`.
+
+### Boosting
+
+We now consider *boosting*, another way to improve the predictive accuracy of decision trees. Boosting is a slow learner, meaning it gradually improves on some model (in this case, a decision tree) which fits to the data only one time, and therefore can suffer from overfitting. Like bagging, boosting involves fitting some large number $B$ of trees and combining them, but unlike bagging, each new tree is grown using information from all of the previously grown trees. The rate at which boosting "learns", i.e. how much we allow each new tree to influence the next tree, is controlled by the shrinkage parameter $\lambda$.
+
+Boosting involves multiple hyperparameters which we have to optimize. Unlike when we considered random forest models, taking too large a value of $B$ can actually lead to overfitting in the context of boosting, so we have to account for this in choosing the `n.trees` parameter value. We also optimize the shrinkage parameter `shrinkage` and the parameter `n.minobsinnode`, which sets the minimum number of observations in each terminal node. Finally, we take into account the complexity of each tree by modifying the maximum tree depth value `interaction.depth`. Note that we set `distribution=bernoulli` as we are dealing with a binary classification problem.
+
+```{r boostfit}
+#create grid of hyperparameter values to try
+gbm_grid <- expand.grid(
+  n.trees = c(100, 200, 300, 400, 500), 
+  interaction.depth = c(1, 2, 3, 5),
+  shrinkage = c(0.01, 0.1, 0.2),
+  n.minobsinnode = c(3, 5, 10) #try a smaller value bc not very large training sample, default is 10
+)
+
+#set seed for reproducibility
+set.seed(99)
+
+#train model using cv with caret
+gbm_caret <- train(
+  diagnosis ~ .,
+  data = clatrain,
+  method = "gbm",
+  distribution = "bernoulli",
+  trControl = trainControl(method = "cv", number = 10, verboseIter = FALSE),
+  verbose = FALSE,
+  metric = 'Accuracy',
+  tuneGrid = gbm_grid
+)
+
+#print the optimal hyperparameter values
+print(gbm_caret$bestTune)
+
+```
+
+We find through 10-fold cross-validation that the optimal hyperparameter values are those above. We now evaluate the performance of this optimal boosted model on the test set.
+
+```{r boostfinal}
+#evaluate performance on test set
+gbm.pred <- predict(gbm_caret, clatest)
+confusionMatrix(gbm.pred, clatest$diagnosis)
+```
+
+Our optimal model with boosting has an accuracy of 97.9% on the test set, which outperforms both random forest and the individual classification tree. Finally, we can see how the `gbm()` model ranked the importance of our predictors.
+
+```{r boostvarimp}
+#plot variable importance for 5 most important variables
+par(mar=c(2,9,2,0.2))
+summary(gbm_caret$finalModel, cBars=5, las=1, cex.lab=0.75, main="Variable importance in boosted model")
+```
+
+The ranking of each predictor's importance is almost identical to that of random forest when it comes to the most important predictors, as each ranking has the same top five most important variables.
+
+## IV. Conclusion
+
+We considered five different models to handle the same regression task of predicting the critical temperature of superconductors, and evaluated each in terms of RMSE. Although the GAM performed the best in predicting the test set out of all the OLS-based methods, it was outperformed by the regression tree. With that being said, the GAM also had to use a specified subset of predictors while the regression tree was optimized over all predictors, so this result isn't surprising. 
+
+In the classification context, the method that achieved the best accuracy in predicting the test set was gradient boosting, followed by random forests, both of which significantly outperformed the single classification tree. Again, this isn't surprising as random forests and boosting were both conceived in order to improve on the single decision tree by combining many trees, thereby decreasing variance. Also of note is that every single classification method identified `perimeter_worst` and `concave.points_worst` as the most important predictors in determining whether a tumor is benign or malignant.
+
+\newpage
+
+## V. Citations
+
+Combescot, Roland (2022). Superconductivity. Cambridge University Press. pp. 1–2. ISBN 9781108428415.
+
+Gareth James, Daniela Witten, Trevor Hastie, Robert Tibshirani. An Introduction to Statistical Learning: with Applications in R. New York :Springer, 2013.
+
+Hamidieh, Kam, A data-driven statistical model for predicting the critical temperature of a superconductor, Computational Materials Science, Volume 154, November 2018, Pages 346-354, [<https://doi.org/10.1016/j.commatsci.2018.07.052>]
+
+W.N. Street, W.H. Wolberg and O.L. Mangasarian. Nuclear feature extraction for breast tumor diagnosis. (1995). UCI Machine Learning Repository [<https://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+%28Diagnostic%29>]. Irvine, CA: University of California, School of Information and Computer Science.
