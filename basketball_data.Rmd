@@ -1,0 +1,231 @@
+---
+title: "logit/probit"
+author: "Theo Teske"
+date: "2023-03-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(devtools)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+library(car)
+library(AER)
+library(broom)
+library(leaps)
+library(Boruta)
+library("PerformanceAnalytics")
+library(corrgram)
+library(lmvar)
+
+#rm(list=ls(all=TRUE))
+
+players <- read.table("C:/Users/Theo/Downloads/All Players.csv", header=TRUE,
+   sep=",")
+guards <- read.table("C:/Users/Theo/Downloads/Guards Data.csv", header=TRUE,
+   sep=",")
+centers <- read.table("C:/Users/Theo/Downloads/Centers Data.csv", header=TRUE,
+   sep=",")
+forwards <- read.table("C:/Users/Theo/Downloads/Forwards Data.csv", header=TRUE,
+   sep=",")
+
+cur_guards <- read.table("C:/Users/Theo/Downloads/Current Guards.csv", header=TRUE,
+   sep=",")
+cur_centers <- read.table("C:/Users/Theo/Downloads/Current Centers.csv", header=TRUE,
+   sep=",")
+cur_forwards <- read.table("C:/Users/Theo/Downloads/Current Forwards.csv", header=TRUE,
+   sep=",")
+
+#make binary variable
+hof <- c()
+for(i in seq(391)){
+  if(!(guards$hof[i]=="FALSE"))
+    hof[i] <- 1
+  else
+    hof[i] <- 0
+}
+
+#make data frame
+g <- guards$g
+gs <- guards$gs
+mp <- guards$mp
+fg <- guards$fg
+fga <- guards$fga
+x3p <- guards$x3p
+x3pa <- guards$x3pa
+x2p <- guards$x2p
+x2pa <- guards$x2pa
+ft <- guards$ft
+fta <- guards$fta
+orb <- guards$orb
+drb <- guards$drb
+trb <- guards$trb
+ast <- guards$ast
+stl <- guards$stl
+blk <- guards$blk
+tov <- guards$tov
+pf <- guards$pf
+pts <- guards$pts
+mpg <- guards$mpg
+fg_percent <- guards$fg_percent
+x3p_percent <- guards$x3p_percent
+x2p_percent <- guards$x2p_percent
+ft_percent <- guards$ft_percent
+pts_per_game <- guards$pts_per_game
+years <- guards$years
+ast_per_game <- guards$ast_per_game
+tov_per_game <- guards$tov_per_game
+stl_per_game <- guards$stl_per_game
+x3p_per_game <- guards$x3p_per_game
+x2p_per_game <- guards$x2p_per_game
+fg_per_game <- guards$fg_per_game
+orb_per_game <- guards$orb_per_game
+drb_per_game <- guards$drb_per_game
+trb_per_game <- guards$trb_per_game
+
+data <- data.frame(g,mp,fg,fga,x3p,x3pa,x2p,x2pa,ft,fta,orb,drb,trb,ast,
+stl,blk,tov,pf,pts,mpg,fg_percent,x3p_percent,x2p_percent,ft_percent,
+pts_per_game,hof,years,ast_per_game,tov_per_game,stl_per_game,x3p_per_game,
+x2p_per_game,fg_per_game,orb_per_game,drb_per_game,trb_per_game)
+
+```
+
+
+Here is an example with the data for guards. I'm using Guards Data.csv, regressing hof on the rest of the variables that make sense. I made a dataframe with all the variables in it. Now we look at Mallows' Cp:
+
+```{r logimallows}
+malcp <- c()
+
+cpvector <- function()
+
+```
+
+
+
+```{r mallows}
+ss=regsubsets(hof ~ ., method=c("exhaustive"),nbest=3, data = data)
+
+#full plot
+subsets(ss,statistic="cp",legend=F,main="Mallows CP",col="steelblue4")
+
+#specific zoom in on the bottom ones
+subsets(ss,statistic="cp",legend=F,main="Mallows CP",col="steelblue4", ylim = c(20, 30), xlim = c(0,20))
+
+```
+
+We have a clear top 3 models:
+
+1. Regress on mp,x3p,x3pa,ast,tov,x2p_percent,ft_percent,stl_per_game,x2p_per_game
+2. Regress on mp,x3p,x3pa,blk,tov,x2p,ft_percent,stl_per_game,x2p_per_game
+3. Regress on g,mp,x3p,x3pa,ast,tov,pf,x2p_percent,stl_per_game
+
+We can verify these with the Boruta algorithm:
+
+```{r boruta}
+Bor.res <- Boruta(hof ~., data = data, doTrace = 2)
+
+sorted_vars = attStats(Bor.res)[order(-attStats(Bor.res)$meanImp),]
+print(sorted_vars)
+
+#plot(Bor.res,sort=TRUE)
+plot(Bor.res, xlab = "", xaxt = "n", main="Boruta Algorithm Feature Importance")
+lz<-lapply(1:ncol(Bor.res$ImpHistory),function(i)
+Bor.res$ImpHistory[is.finite(Bor.res$ImpHistory[,i]),i])
+names(lz) <- colnames(Bor.res$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),
+at = 1:ncol(Bor.res$ImpHistory), cex.axis = 0.7)
+```
+
+The Boruta analysis confirms the importance of all the variables in our Mallows' Cp models. So, we compare each, beginning with logit models.
+
+```{r logit}
+logit.mod1 <- glm(hof ~ mp+x3p+x3pa+ast+tov+x2p_percent+ft_percent+stl_per_game+x2p_per_game, family = binomial(link = "logit"), data = data)
+
+logit.mod2 <- glm(hof ~ mp+x3p+x3pa+blk+tov+x2p+ft_percent+stl_per_game+x2p_per_game, family = binomial(link = "logit"), data = data)
+
+logit.mod3 <- glm(hof ~ g+mp+x3p+x3pa+ast+tov+pf+x2p_percent+stl_per_game, family = binomial(link = "logit"), data = data)
+
+l=0.5
+
+tab.mod1 <- table("Logit model 1" = predict(logit.mod1, type = "response") >= l,
+"Actual" = hof)
+
+tab.mod2 <- table("Logit model 2" = predict(logit.mod2, type = "response") >= l,
+"Actual" = hof)
+
+tab.mod3 <- table("Logit model 3" = predict(logit.mod3, type = "response") >= l,
+"Actual" = hof)
+
+prop.table(tab.mod1, margin = 2) * 100
+prop.table(tab.mod2, margin = 2) * 100
+prop.table(tab.mod3, margin = 2) * 100
+
+```
+
+Clearly, Logit model 3 performs the best, performing with perfect accuracy. So, we can see what it predicts for our current guards:
+
+```{r predicting}
+
+cur_guards$player[34]="D'Angelo Russell"
+cur_guards$player[35]="DeAnthony Melton"
+
+pred_hof <- c()
+
+newdata <- data.frame(g=cur_guards$g,mp=cur_guards$mp,x3p=cur_guards$x3p,x3pa=cur_guards$x3pa,ast=cur_guards$ast,tov=cur_guards$tov,pf=cur_guards$pf,x2p_percent=cur_guards$x2p_percent,stl_per_game=cur_guards$stl_per_game)
+
+pred <- predict(logit.mod3, type="response", newdata=newdata)
+print("Predicted to be in the HOF: ")
+
+for(i in seq(166)){
+  if(is.na(pred[i]))
+    pred[i] = 0
+  if(pred[i]>0.5){
+    pred_hof[i]=TRUE
+    print(cur_guards$player[i])
+  }
+  else
+    pred_hof[i]=FALSE
+}
+
+```
+
+Most players the model has selected are multiple-time All Stars and unarguably great. However, the model has made two potentially surprising selections: A.J. Green and Kendall Brown. Upon further investigation, both of these players are rookies in the current (2022-2023) NBA season, so together they have played a combined 259 minutes in the league. With that being said, in that short time, A.J. Green is shooting 40% from beyond the arc and Kendall Brown is shooting 57% from the field, so the model is clearly picking up on something. If we add some lower bound on the number of minutes played (say, one has to have played the equivalent of 5 full NBA games, or 240 minutes), then our predictions become:
+
+```{r updatedpred}
+
+print("Predicted to be in the HOF: ")
+
+for(i in seq(166)){
+  if((pred[i]>0.5)&(cur_guards$mp[i]>=240)){
+    pred_hof[i]=TRUE
+    print(cur_guards$player[i])
+  }
+  else
+    pred_hof[i]=FALSE
+}
+
+```
+
+And now you also have a nice dataframe of predictions, and a function to look up whether a player is predicted to make the HOF or not:
+
+```{r results}
+
+predictions <- data.frame(Name = cur_guards$player, HOF = pred_hof)
+
+#make function to look up specific players
+lookup <- function(fname) {
+  for(i in seq(166)){
+if(predictions$Name[i]==fname)
+  print(predictions$HOF[i])
+}
+}
+
+#test it out
+lookup("Quentin Grimes")
+lookup("Stephen Curry")
+
+```
