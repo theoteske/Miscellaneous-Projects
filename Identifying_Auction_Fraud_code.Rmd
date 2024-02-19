@@ -1,0 +1,491 @@
+---
+title: "Econ187ProjectFinal"
+author: "Theo Teske"
+date: "2023-06-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+#rm(list=ls())
+library(data.table)
+library(MASS)
+library(caret)
+library(gbm)
+library(themis)
+library(dplyr)
+library(pROC)
+library(ranger)
+library(ggstatsplot)
+library(ggcorrplot)
+library(gridExtra)
+library(grid)
+library(swfscMisc)
+library(lattice)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#load in data
+bid <- read.table("C:/Users/Theo/Downloads/Shill_Bidding_Dataset.csv", header=TRUE,
+   sep=",")
+bid <- bid[,-1:-3]
+bid$Class <- as.factor(bid$Class)
+levels(bid$Class) <- c("Normal", "Shill")
+
+#look at class imbalance
+counts<-table(bid$Class)
+barplot(counts, main="Occurrence of Shill Bidders in Data Set", col=c("forestgreen", "tomato"))
+```
+
+
+
+```{r traintestsplit}
+#set a seed to ensure our data is reproducible
+set.seed(123)
+
+#create 75% training 25% testing split
+trainIndex <- createDataPartition(bid$Class, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+training <- bid[trainIndex, ]
+testing <- bid[-trainIndex, ]
+
+```
+
+
+
+```{r makingweights}
+#create training control
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 5,
+                     repeats = 3,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE, 
+                     allowParallel = TRUE)
+
+
+
+#create weights
+model_weights <- ifelse(training$Class == "Normal",
+                       (1/table(training$Class)[1]) * 0.5,
+                       (1/table(training$Class)[2]) * 0.5)
+
+model_weights2 <- ifelse(training$Class == "Normal",
+                       (1/table(training$Class)[1]) * 0.45,
+                       (1/table(training$Class)[2]) * 0.55)
+
+model_weights3 <- ifelse(training$Class == "Normal",
+                       (1/table(training$Class)[1]) * 0.475,
+                       (1/table(training$Class)[2]) * 0.525)
+
+model_weights4 <- ifelse(training$Class == "Normal",
+                       (1/table(training$Class)[1]) * 0.55,
+                       (1/table(training$Class)[2]) * 0.45)
+
+model_weights5 <- ifelse(training$Class == "Normal",
+                       (1/table(training$Class)[1]) * 0.525,
+                       (1/table(training$Class)[2]) * 0.475)
+
+```
+
+
+
+```{r logiitr}
+set.seed(123)
+weighted_logit <- train(Class ~ .,
+  data = training,
+  trControl = ctrl,
+  method = "glm",
+  family = "binomial",
+  weights = model_weights,
+  metric="ROC"
+)
+
+set.seed(132)
+
+ctrl$sampling <- "smote"
+smote_logit <- train(Class ~ .,
+  data = training,
+  trControl = ctrl,
+  method = "glm",
+  family = "binomial",
+  metric="ROC"
+)
+
+logitw_pred <- predict(weighted_logit, testing)
+confusionMatrix(logitw_pred, testing$Class)
+
+logits_pred <- predict(smote_logit, testing)
+confusionMatrix(logits_pred, testing$Class)
+
+```
+
+```{r knntra}
+set.seed(131)
+ctrl$sampling <- NULL
+weighted_knn <- train(Class ~ ., 
+             data = training, 
+             method = "lda",
+             trControl = ctrl,
+             weights = model_weights,
+             metric = "ROC")
+
+#ctrl$sampling <- "smote"
+set.seed(131)
+smote_knn <- train(Class ~ ., 
+             data = training, 
+             method = "lda",
+             trControl = ctrl,
+             metric = "ROC")
+
+knnw_pred <- predict(weighted_knn, testing)
+confusionMatrix(knnw_pred, testing$Class)
+
+knns_pred <- predict(smote_knn, testing)
+confusionMatrix(knns_pred, testing$Class)
+
+```
+
+```{r randomfroee}
+###Ranger - Random Forests
+#create grid of hyperparameter values to try
+ranger_grid <- expand.grid(
+  mtry=c(1,3,5,7,9),
+  splitrule="gini",
+  min.node.size=c(1,5)
+)
+
+set.seed(123)
+#train weighted model
+weighted_rf <- train(Class ~ .,
+                      data = training,
+                      method = "ranger",
+                      verbose = FALSE,
+                      weights = model_weights,
+                      metric = "ROC",
+                      trControl = ctrl,
+                      tuneGrid = ranger_grid,
+                     importance = 'impurity')
+
+#train smote model
+ctrl$sampling <- "smote"
+set.seed(123)
+smote_rf <- train(Class ~ .,
+                   data = training,
+                   method = "ranger",
+                   verbose = FALSE,
+                   metric = "ROC",
+                   trControl = ctrl,
+                   tuneGrid = ranger_grid,
+                  importance = 'impurity')
+
+rfw_pred <- predict(weighted_rf, testing)
+confusionMatrix(rfw_pred, testing$Class)
+
+rfs_pred <- predict(smote_rf, testing)
+confusionMatrix(rfs_pred, testing$Class)
+```
+
+```{r dum1}
+###GBM - Stochastic Gradient Boosting
+#create grid of hyperparameter values to try
+ctrl$sampling <- NULL
+gbm_grid <- expand.grid(
+  n.trees = c(100, 200, 300, 500), 
+  interaction.depth = c(1, 3, 5),
+  shrinkage = c(0.01, 0.1, 0.2),
+  n.minobsinnode = 10 #default
+)
+
+#weighted fit
+set.seed(123)
+weighted_gbm <- train(Class ~ .,
+                      data = training,
+                      method = "gbm",
+                      distribution = "bernoulli",
+                      verbose = FALSE,
+                      weights = model_weights,
+                      metric = "ROC",
+                      trControl = ctrl,
+                      tuneGrid = gbm_grid)
+
+#smote fit
+ctrl$sampling <- "smote"
+
+set.seed(123)
+smote_gbm <- train(Class ~ .,
+                   data = training,
+                   method = "gbm",
+                   distribution = "bernoulli",
+                   verbose = FALSE,
+                   metric = "ROC",
+                   trControl = ctrl,
+                   tuneGrid = gbm_grid)
+
+gbmw_pred <- predict(weighted_gbm, testing)
+confusionMatrix(gbmw_pred, testing$Class)
+
+gbms_pred <- predict(smote_gbm, testing)
+confusionMatrix(gbms_pred, testing$Class)
+```
+
+```{r xgbsot}
+#format the stuff correctly
+input_x <- as.matrix(select(training, -Class))
+input_y <- training$Class
+
+#do the setup
+ctrl$sampling <- NULL
+xgboost_grid <- expand.grid(
+  nrounds = c(100, 200, 500),
+  max_depth = c(3,6),
+  eta = c(0.01, 0.1, 0.3),
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+#train w caret
+set.seed(123)
+weighted_xgb <- train(x = input_x,
+  y = input_y,
+  trControl = ctrl,
+  tuneGrid = xgboost_grid,
+  method = "xgbTree",
+  verbose = FALSE,
+  metric = "ROC"
+)
+
+#smote fit
+ctrl$sampling <- "smote"
+
+set.seed(123)
+smote_xgb <- train(x = input_x,
+  y = input_y,
+  trControl = ctrl,
+  tuneGrid = xgboost_grid,
+  method = "xgbTree",
+  verbose = FALSE,
+  metric = "ROC"
+)
+
+xgbw_pred <- predict(weighted_xgb, testing)
+confusionMatrix(xgbw_pred, testing$Class)
+
+xgbs_pred <- predict(smote_xgb, testing)
+confusionMatrix(xgbs_pred, testing$Class)
+```
+
+## Plots
+
+Hyperparameter tuning
+```{r hyperparamplots}
+#weighted rf
+plot(weighted_rf, main="RF(W)")
+
+#smote rf
+plot(smote_rf, main="RF(S)")
+
+#weighted gbm
+plot(weighted_gbm, main="GBM(W)")
+
+#smote gbm
+plot(smote_gbm, main="GBM(S)")
+
+#weighted xgb
+plot(weighted_xgb, main="XGB(W)")
+
+#smote xgb
+plot(smote_xgb, main="XGB(S)")
+
+
+```
+
+Variable Importance
+```{r varimps}
+varImp(weighted_rf)
+rf_heights <- c(100, 33.8769, 17.4031, 7.9204, 2.4090)
+rf_heights <- rev(rf_heights)
+
+par(mar=c(5,10,2,0.5))
+barplot(rf_heights, names.arg = c("Auction_Duration", "Bidder_Tendency", "Winning_Ratio", "Bidding_Ratio", "Successive_Outbidding"), las=2, horiz = TRUE, xlab="Importance", main="RF")
+
+
+#plot variable importance for 5 most important variables
+par(mar=c(2,10,2,0.2))
+summary(weighted_gbm$finalModel, cBars=5, las=1, cex.lab=0.75, main="GBM")
+
+
+par(mar=c(2,10,2,0.2))
+summary(smote_gbm$finalModel, cBars=5, las=1, cex.lab=0.75, main="GBM(S)")
+
+
+#var imp for xgboost
+caret_impw <- varImp(weighted_xgb)
+plot(caret_impw, main="XGB")
+caret_imps <- varImp(smote_xgb)
+plot(caret_imps, main="XGB(S)")
+```
+
+diagram for methodology
+```{r methodiagram}
+library(DiagrammeR)
+
+DiagrammeR::grViz("digraph {
+
+graph [overlap = true, layout = dot]
+
+node [shape = rectangle, fixedsize = true, width = 1]
+
+data [label = 'Training Data', shape = oval, width = 2]
+weight [label =  'Weight \n Classes']
+cv1 [label = 'Perform \n CV']
+train1 [label = 'Train based \n on ROC']
+cv2 [label = 'Perform \n CV']
+smote [label = 'SMOTE']
+train2 [label = 'Train based \n on ROC']
+
+data->weight data->cv2 weight->cv1 cv1->train1 cv2->smote smote->train2
+}")
+
+```
+
+summary table
+```{r summtable}
+#make our vectors, they go sens, spec, ppv, npv, acc, f1
+rfw <- c(0.9956, 0.9926, 0.9991, 0.9640, 0.9953, 0.9973)
+rfs <- c(0.9973, 0.9926, 0.9991, 0.9781, 0.9968, 0.9982)
+gbmw <- c(0.9894, 0.9926, 0.9991, 0.9178, 0.9897, 0.9942)
+gbms <- c(0.9947, 0.9926, 0.9991, 0.9571, 0.9945, 0.9967)
+xgbw <- c(0.9982, 0.9926, 0.9991, 0.9853, 0.9976, 0.9986)
+xgbs <- c(0.9973, 0.9926, 0.9991, 0.9781, 0.9968, 0.9982)
+
+resframe <- data.frame(rfw, rfs, gbmw, gbms, xgbw, xgbs)
+resframe <- round(resframe, digits = 4)
+
+g <- tableGrob(resframe, rows = c("Sensitivity", "Specificity", "PPV", "NPV", "Accuracy", "F1 Score"), cols = c("RF(W)", "RF(S)", "GBM(W)", "GBM(S)", "XGB(W)", "XGB(S)"), theme=ttheme_minimal())
+
+plot(g)
+
+```
+
+
+f1 score barplot
+```{r fscorebar}
+gfg <- data.frame(F1_Score = c(rfw[6], rfs[6], gbmw[6], gbms[6], xgbw[6], xgbs[6]), 
+                   Group = rep(c("RF", "GBM", "XGB"), each = 2),
+                   Subgroup = rep(c("Weighted", "SMOTE"), 3))
+require(lattice)
+
+barchart(F1_Score~Group, groups = Subgroup, gfg, auto.key=list(columns = 3), main="F1 Score of each Model")
+```
+
+
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r plots, echo=FALSE}
+gfg <- data.frame(Accuracy = c(logitwres[1], logitsres[1], ldawres[1], ldasres[1],
+                               qdawres[1], qdasres[1], rfwres[1], rfsres[1], 
+                               gbmwres[1], gbmsres[1]), 
+                   Group = rep(c("Logit", "LDA", "QDA","RF", "GBM"), each = 2),
+                   Subgroup = rep(c("Weighted", "SMOTE"), 5))
+require(lattice)
+barchart(Accuracy~Group, groups = Subgroup, gfg, auto.key=list(columns = 3))
+
+ddd <- data.frame(F1_Score = c(logitwres[4], logitsres[4], ldawres[4], ldasres[2],
+                               qdawres[4], qdasres[4], rfwres[2], rfsres[2], 
+                               gbmwres[2], gbmsres[2]), 
+                   Group = rep(c("Logit", "LDA", "QDA","RF", "GBM"), each = 2),
+                   Subgroup = rep(c("Weighted", "SMOTE"), 5))
+require(lattice)
+barchart(F1_Score~Group, groups = Subgroup, ddd, auto.key=list(columns = 3))
+
+rfwres <- c(0.9953, 2*(0.9956*0.9926)/(0.9956+0.9926))
+rfsres <- c(0.9968, 2*(0.9973*0.9926)/(0.9973+0.9926))
+gbmwres <- c(0.9897, 2*(0.9894*0.9926)/(0.9894+0.9926))
+gbmsres <- c(0.9945, 2*(0.9947*0.9926)/(0.9947+0.9926))
+
+
+
+logitwres <- c(0.9826, 0.9814, 0.9926, 2*(0.9814*0.9926)/(0.9814+0.9926))
+logitsres <- c(0.9834, 0.9823, 0.9926, 2*(0.9823*0.9926)/(0.9823+0.9926))
+
+ldawres <- c(0.9747, 0.9717, 1, 2*(0.9717*1)/(0.9717+1))
+ldasres <- c(0.9747, 0.9717, 1, 2*(0.9717*1)/(0.9717+1))
+
+qdawres <- c(0.9636, 0.9601, 0.9926, 2*(0.9601*0.9926)/(0.9601+0.9926))
+qdasres <- c(0.9636, 0.9601, 0.9926, 2*(0.9601*0.9926)/(0.9601+0.9926))
+
+nontuneres <- data.frame(logitwres, logitsres, ldawres, ldasres, qdawres, qdasres)
+nontuneres <- round(nontuneres, digits = 3)
+
+t1 <- tableGrob(nontuneres, rows = c("Sensitivity", "Specificity", "PPV", "NPV"), cols = c("RF(W)", "RF(S)", "GBM(W)", "GBM(S)", "XGB(W)", "XGB(S)"), theme=ttheme_minimal())
+
+grid.draw(t1)
+
+plot(weighted_gbm, main="Weighted GBM AUC on ntrees values")
+
+
+par(mfrow=c(1,1), mar=c(2,2,2,2))
+plot(bid$Class, bid$Last_Bidding, col="cadetblue3", main="Last Bidding on Shill Occurrence")
+
+plot(bid$Class, bid$Bidder_Tendency, col="burlywood1", main="Bidder Tendency on Shill Occurrence")
+
+barplot(counts, main="Occurrence of Shill Bidders in Data Set", col=c("forestgreen", "tomato"))
+
+#this is done now
+p <- ggstatsplot::ggcorrmat(
+  data = bid[,-10],
+  type = "parametric",
+  colors = c("darkred", "white", "steelblue")
+)
+
+#this is the one we want, better font size
+print(p, vp=grid::viewport(gp=grid::gpar(cex=0.8)))
+
+par(mar = c(10, 3, 0.4, 0.4))
+boxplot(bid[,1:8], las=2, col=c("burlywood1", "coral", "firebrick3", "cadetblue3", "dodgerblue", "gold2", "chartreuse3", "darkolivegreen"))
+
+par(mfrow=c(3,3), mar=c(0.5, 0.2, 1, 0.2))
+hist(bid$Bidder_Tendency, main="Bidder Tendency", xlab="", ylab="", xaxt='n', yaxt='n', col="burlywood1")
+hist(bid$Bidding_Ratio, main="Bidding Ratio", xlab="", ylab="", xaxt='n', yaxt='n', col="coral")
+hist(bid$Successive_Outbidding, main="Successive Outbidding", xlab="", ylab="", xaxt='n', yaxt='n', col="firebrick3")
+hist(bid$Last_Bidding, main="Last Bidding", xlab="", ylab="", xaxt='n', yaxt='n', col="cadetblue3")
+hist(bid$Auction_Bids, main="Auction Bids", xlab="", ylab="", xaxt='n', yaxt='n', col="dodgerblue")
+hist(bid$Starting_Price_Average, main="Starting Price Average", xlab="", ylab="", xaxt='n', yaxt='n', col="gold2")
+hist(bid$Early_Bidding, main="Early Bidding", xlab="", ylab="", xaxt='n', yaxt='n', col="chartreuse3")
+hist(bid$Winning_Ratio, main="Winning Ratio", xlab="", ylab="", xaxt='n', yaxt='n', col="darkolivegreen")
+hist(bid$Auction_Duration, main="Auction Duration", xlab="", ylab="", xaxt='n', yaxt='n', col="darkorchid3")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r roccurves}
+r1 <- roc(rfw_pred, testing$Class)
+plot(r1)
+
+```
+
+<https://archive-beta.ics.uci.edu/dataset/562/shill+bidding+dataset>
+
+<https://www.kaggle.com/datasets/aishu2218/shill-bidding-dataset>
+
+https://rstudio-pubs-static.s3.amazonaws.com/938731_0a06285936be4176ac1bd2da0955f499.html
+
+
+citation for ggstatsplot:
+Patil, I. (2021). Visualizations with statistical details: The 'ggstatsplot' approach.
+     Journal of Open Source Software, 6(61), 3167, doi:10.21105/joss.03167
